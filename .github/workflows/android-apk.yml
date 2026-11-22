@@ -61,6 +61,24 @@ jobs:
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
+      - name: Align and explicitly sign APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/debug -name '*.apk' -type f | head -1)"
+          test -n "$APK"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          ZIPALIGN="$(find "$SDK_ROOT/build-tools" -name zipalign -type f | sort -V | tail -1)"
+          APKSIGNER="$(find "$SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          test -x "$ZIPALIGN"
+          test -x "$APKSIGNER"
+          "$ZIPALIGN" -f 4 "$APK" "${APK%.apk}-aligned.apk"
+          mv "${APK%.apk}-aligned.apk" "$APK"
+          "$APKSIGNER" sign --ks debug.keystore --ks-key-alias androiddebugkey \
+            --ks-pass pass:android --key-pass pass:android --out "${APK%.apk}-signed.apk" "$APK"
+          mv "${APK%.apk}-signed.apk" "$APK"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
       - name: Run unit tests (non-blocking)
         continue-on-error: true
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
