@@ -85,7 +85,7 @@
     scene.background = new THREE.Color(0xf0936d);
     scene.fog = new THREE.FogExp2(0xd98772, 0.0032);
 
-    const camera = new THREE.PerspectiveCamera(64, window.innerWidth / window.innerHeight, 0.15, 560);
+    const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.15, 560);
     const pmremGen = new THREE.PMREMGenerator(renderer);
     pmremGen.compileEquirectangularShader();
 
@@ -1012,7 +1012,36 @@
     // =========================================================================
     // 8. PLAYER, INPUT BRIDGE, TIME OF DAY & PHYSICS LOOP
     // =========================================================================
-    const playerData = createHuman(0xff5ea8, 0x1b2330);
+    // R. Miller playable character, modeled from the supplied turnaround reference.
+    function createMainCharacter() {
+      const g = new THREE.Group();
+      const mat = (color, roughness=0.88, metalness=0) => new THREE.MeshStandardMaterial({color,roughness,metalness});
+      const skin=mat(0xc58d70), shadowSkin=mat(0x98664f), navy=mat(0x202b3c), trim=mat(0x39465a), black=mat(0x090c12), jeans=mat(0x252a34), denimHi=mat(0x424650), brown=mat(0x392c25), hair=mat(0x171719), silver=mat(0xb7b8b9,0.3,0.72);
+      const add=(p,geo,m,x,y,z,sx=1,sy=1,sz=1)=>{const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);o.scale.set(sx,sy,sz);o.castShadow=true;o.receiveShadow=true;p.add(o);return o;};
+      const box=(p,m,x,y,z,sx,sy,sz)=>add(p,new THREE.BoxGeometry(1,1,1),m,x,y,z,sx,sy,sz);
+      const ball=(p,m,x,y,z,sx,sy,sz)=>add(p,new THREE.SphereGeometry(1,12,10),m,x,y,z,sx,sy,sz);
+      // Hip-pivot limbs retain the existing walk-cycle animation hooks.
+      const legL=new THREE.Group(),legR=new THREE.Group();legL.position.set(-0.125,0.79,0);legR.position.set(0.125,0.79,0);g.add(legL,legR);
+      [legL,legR].forEach(l=>{box(l,jeans,0,-0.35,0,0.205,0.72,0.23);ball(l,denimHi,0,-0.18,-0.006,0.103,0.19,0.119);box(l,jeans,0,-0.69,0.015,0.19,0.12,0.22);box(l,brown,0,-0.78,-0.075,0.23,0.16,0.37);box(l,brown,0,-0.855,-0.07,0.235,0.035,0.38);});
+      // Black T-shirt under a structured navy jacket.
+      box(g,black,0,1.17,0,0.405,0.62,0.235);box(g,navy,0,1.19,0.025,0.54,0.64,0.29);
+      box(g,black,0,1.2,-0.128,0.12,0.57,0.018);
+      box(g,trim,-0.055,1.19,-0.132,0.025,0.59,0.018);box(g,trim,0.055,1.19,-0.132,0.025,0.59,0.018);
+      const c1=box(g,trim,-0.105,1.48,-0.09,0.17,0.13,0.07);c1.rotation.z=-0.32;
+      const c2=box(g,trim,0.105,1.48,-0.09,0.17,0.13,0.07);c2.rotation.z=0.32;
+      box(g,trim,0,0.88,0.02,0.55,0.055,0.3);
+      [-1,1].forEach(side=>{box(g,trim,side*0.17,1.31,-0.15,0.14,0.15,0.025);box(g,navy,side*0.17,1.32,-0.169,0.125,0.12,0.012);box(g,silver,side*0.17,1.39,-0.17,0.035,0.018,0.012);});
+      const armL=new THREE.Group(),armR=new THREE.Group();armL.position.set(-0.32,1.43,0);armR.position.set(0.32,1.43,0);g.add(armL,armR);
+      [armL,armR].forEach((a,i)=>{const sign=i===0?-1:1;const sleeve=box(a,navy,sign*0.015,-0.24,0,0.19,0.48,0.22);sleeve.rotation.z=sign*0.035;box(a,trim,sign*0.015,-0.48,0,0.195,0.075,0.225);box(a,skin,sign*0.015,-0.59,-0.005,0.13,0.17,0.14);});
+      ball(g,skin,0,1.56,0,0.105,0.12,0.105);ball(g,skin,0,1.76,-0.005,0.19,0.235,0.17);
+      ball(g,hair,0,1.91,0.012,0.195,0.115,0.18);box(g,hair,0,1.84,0.145,0.31,0.075,0.045);
+      ball(g,shadowSkin,0,1.68,0.135,0.145,0.055,0.035);
+      [-1,1].forEach(side=>{ball(g,skin,side*0.19,1.76,0,0.035,0.055,0.045);box(g,hair,side*0.075,1.82,0.15,0.055,0.018,0.018);ball(g,black,side*0.067,1.785,0.157,0.018,0.012,0.009);});
+      ball(g,skin,0,1.765,0.17,0.025,0.045,0.03);
+      const chain=new THREE.Mesh(new THREE.TorusGeometry(0.105,0.008,5,24,Math.PI),silver);chain.rotation.x=Math.PI;chain.position.set(0,1.405,-0.142);g.add(chain);box(g,silver,0,1.315,-0.145,0.025,0.035,0.012);
+      return {g,armL,armR,legL,legR};
+    }
+    const playerData = createMainCharacter();
     const playerMesh = playerData.g;
     const player = new THREE.Object3D();
     player.position.set(0, 0.16, 10);
@@ -1020,7 +1049,7 @@
     scene.add(player);
 
     let velY = 0, onGround = true, walkPhase = 0;
-    let camYaw = 0, camPitch = 0.24;
+    let camYaw = 0, camPitch = 0.16;
     const joy = { x: 0, y: 0 };
 
     function standUp() {
@@ -1305,7 +1334,7 @@
 
     const clock = new THREE.Clock();
     const raycaster = new THREE.Raycaster();
-    const camDistances = [4.6, 7.0, 10.6];
+    const camDistances = [4.0, 5.2, 6.8];
     let lastTelemetrySent = 0;
 
     function animate() {
@@ -1400,7 +1429,7 @@
       }
 
       // 3rd-Person Orbit Camera with Wall Occlusion Raycast
-      const targetPos = new THREE.Vector3(player.position.x, player.position.y + 1.55, player.position.z);
+      const targetPos = new THREE.Vector3(player.position.x, player.position.y + 1.42, player.position.z);
       const desiredDist = camDistances[state.camDistMode] || 4.6;
       const offsetDir = new THREE.Vector3(
         Math.sin(camYaw) * Math.cos(camPitch),
