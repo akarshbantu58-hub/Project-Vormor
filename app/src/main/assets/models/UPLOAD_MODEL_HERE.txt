@@ -1,0 +1,7 @@
+Upload the supplied rigged model into this folder with this exact filename:
+R_Miller_GTA6_Style_Character_v2.glb
+
+The game loader expects:
+app/src/main/assets/models/R_Miller_GTA6_Style_Character_v2.glb
+
+Do not rename the file. The procedural fallback remains active until the GLB is present.
