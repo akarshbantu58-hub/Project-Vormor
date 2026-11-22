@@ -1012,33 +1012,64 @@
     // =========================================================================
     // 8. PLAYER, INPUT BRIDGE, TIME OF DAY & PHYSICS LOOP
     // =========================================================================
-    // R. Miller playable character, modeled from the supplied turnaround reference.
+    // R. Miller — smooth human-proportioned procedural model (not voxel/block geometry).
     function createMainCharacter() {
-      const g = new THREE.Group();
-      const mat = (color, roughness=0.88, metalness=0) => new THREE.MeshStandardMaterial({color,roughness,metalness});
-      const skin=mat(0xc58d70), shadowSkin=mat(0x98664f), navy=mat(0x202b3c), trim=mat(0x39465a), black=mat(0x090c12), jeans=mat(0x252a34), denimHi=mat(0x424650), brown=mat(0x392c25), hair=mat(0x171719), silver=mat(0xb7b8b9,0.3,0.72);
-      const add=(p,geo,m,x,y,z,sx=1,sy=1,sz=1)=>{const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);o.scale.set(sx,sy,sz);o.castShadow=true;o.receiveShadow=true;p.add(o);return o;};
-      const box=(p,m,x,y,z,sx,sy,sz)=>add(p,new THREE.BoxGeometry(1,1,1),m,x,y,z,sx,sy,sz);
-      const ball=(p,m,x,y,z,sx,sy,sz)=>add(p,new THREE.SphereGeometry(1,12,10),m,x,y,z,sx,sy,sz);
-      // Hip-pivot limbs retain the existing walk-cycle animation hooks.
-      const legL=new THREE.Group(),legR=new THREE.Group();legL.position.set(-0.125,0.79,0);legR.position.set(0.125,0.79,0);g.add(legL,legR);
-      [legL,legR].forEach(l=>{box(l,jeans,0,-0.35,0,0.205,0.72,0.23);ball(l,denimHi,0,-0.18,-0.006,0.103,0.19,0.119);box(l,jeans,0,-0.69,0.015,0.19,0.12,0.22);box(l,brown,0,-0.78,-0.075,0.23,0.16,0.37);box(l,brown,0,-0.855,-0.07,0.235,0.035,0.38);});
-      // Black T-shirt under a structured navy jacket.
-      box(g,black,0,1.17,0,0.405,0.62,0.235);box(g,navy,0,1.19,0.025,0.54,0.64,0.29);
-      box(g,black,0,1.2,-0.128,0.12,0.57,0.018);
-      box(g,trim,-0.055,1.19,-0.132,0.025,0.59,0.018);box(g,trim,0.055,1.19,-0.132,0.025,0.59,0.018);
-      const c1=box(g,trim,-0.105,1.48,-0.09,0.17,0.13,0.07);c1.rotation.z=-0.32;
-      const c2=box(g,trim,0.105,1.48,-0.09,0.17,0.13,0.07);c2.rotation.z=0.32;
-      box(g,trim,0,0.88,0.02,0.55,0.055,0.3);
-      [-1,1].forEach(side=>{box(g,trim,side*0.17,1.31,-0.15,0.14,0.15,0.025);box(g,navy,side*0.17,1.32,-0.169,0.125,0.12,0.012);box(g,silver,side*0.17,1.39,-0.17,0.035,0.018,0.012);});
-      const armL=new THREE.Group(),armR=new THREE.Group();armL.position.set(-0.32,1.43,0);armR.position.set(0.32,1.43,0);g.add(armL,armR);
-      [armL,armR].forEach((a,i)=>{const sign=i===0?-1:1;const sleeve=box(a,navy,sign*0.015,-0.24,0,0.19,0.48,0.22);sleeve.rotation.z=sign*0.035;box(a,trim,sign*0.015,-0.48,0,0.195,0.075,0.225);box(a,skin,sign*0.015,-0.59,-0.005,0.13,0.17,0.14);});
-      ball(g,skin,0,1.56,0,0.105,0.12,0.105);ball(g,skin,0,1.76,-0.005,0.19,0.235,0.17);
-      ball(g,hair,0,1.91,0.012,0.195,0.115,0.18);box(g,hair,0,1.84,0.145,0.31,0.075,0.045);
-      ball(g,shadowSkin,0,1.68,0.135,0.145,0.055,0.035);
-      [-1,1].forEach(side=>{ball(g,skin,side*0.19,1.76,0,0.035,0.055,0.045);box(g,hair,side*0.075,1.82,0.15,0.055,0.018,0.018);ball(g,black,side*0.067,1.785,0.157,0.018,0.012,0.009);});
-      ball(g,skin,0,1.765,0.17,0.025,0.045,0.03);
-      const chain=new THREE.Mesh(new THREE.TorusGeometry(0.105,0.008,5,24,Math.PI),silver);chain.rotation.x=Math.PI;chain.position.set(0,1.405,-0.142);g.add(chain);box(g,silver,0,1.315,-0.145,0.025,0.035,0.012);
+      const g=new THREE.Group();
+      const M=(c,r=.86,m=0)=>new THREE.MeshStandardMaterial({color:c,roughness:r,metalness:m});
+      const skin=M(0xb98267), skinHi=M(0xd09a7e), shadow=M(0x805440), hair=M(0x171514);
+      const jacket=M(0x252a32), jacketHi=M(0x414750), shirt=M(0x111316);
+      const jeans=M(0x292b30), denimHi=M(0x44464a), boots=M(0x29231f), sole=M(0x171514);
+      const eye=M(0xe6ded4), iris=M(0x34271f), metal=M(0xb5a68b,.35,.72);
+      const add=(p,geo,mat,x,y,z,sx=1,sy=1,sz=1)=>{const o=new THREE.Mesh(geo,mat);o.position.set(x,y,z);o.scale.set(sx,sy,sz);o.castShadow=true;o.receiveShadow=true;p.add(o);return o;};
+      const ball=(p,m,x,y,z,sx,sy,sz)=>add(p,new THREE.SphereGeometry(1,24,18),m,x,y,z,sx,sy,sz);
+      const box=(p,m,x,y,z,sx,sy,sz)=>add(p,new THREE.BoxGeometry(sx,sy,sz),m,x,y,z);
+      const cyl=(p,m,x,y,z,rt,rb,h)=>add(p,new THREE.CylinderGeometry(rt,rb,h,20,1),m,x,y,z);
+      const legL=new THREE.Group(),legR=new THREE.Group();legL.position.set(-.115,.91,0);legR.position.set(.115,.91,0);g.add(legL,legR);
+      [legL,legR].forEach(l=>{
+        cyl(l,jeans,0,-.38,0,.105,.145,.66);ball(l,jeans,0,-.18,0,.115,.16,.13);
+        ball(l,denimHi,0,-.49,-.005,.108,.075,.11);cyl(l,jeans,0,-.65,.01,.082,.105,.27);
+        ball(l,boots,0,-.79,-.045,.125,.105,.205);ball(l,sole,0,-.86,-.04,.128,.03,.21);
+      });
+      ball(g,jeans,0,.91,0,.245,.16,.145);
+      cyl(g,shirt,0,1.22,0,.205,.245,.56);
+      const torso=new THREE.LatheGeometry([new THREE.Vector2(.18,.91),new THREE.Vector2(.235,1.02),new THREE.Vector2(.255,1.25),new THREE.Vector2(.285,1.43),new THREE.Vector2(.245,1.51),new THREE.Vector2(.17,1.53)],32);
+      torso.computeVertexNormals();add(g,torso,jacket,0,0,0);
+      box(g,shirt,0,1.23,.224,.105,.53,.018);
+      // Tailored jacket lapels and chest pockets.
+      [-1,1].forEach(s=>{
+        const lap=new THREE.Shape();lap.moveTo(0,0);lap.lineTo(s*.14,.24);lap.lineTo(s*.10,.42);lap.lineTo(s*.015,.31);lap.closePath();
+        const lm=add(g,new THREE.ShapeGeometry(lap),jacketHi,s*.105,1.29,.244);lm.rotation.y=s<0?Math.PI:0;
+        box(g,jacketHi,s*.155,1.31,.245,.105,.105,.018);box(g,jacket,s*.155,1.365,.256,.108,.012,.018);
+        ball(g,metal,s*.155,1.385,.264,.009,.009,.006);
+        for(let k=0;k<3;k++)ball(g,metal,s*.018,1.16-k*.095,.239,.008,.008,.006);
+      });
+      ball(g,shirt,0,1.515,0,.105,.075,.095);
+      cyl(g,skin,0,1.59,0,.072,.082,.19);
+      // Defined head, jaw, ears, eyes, brows, nose and mouth.
+      ball(g,skin,0,1.79,0,.155,.215,.145);ball(g,skinHi,0,1.76,.075,.135,.15,.085);
+      ball(g,shadow,0,1.66,.066,.09,.045,.05);
+      [-1,1].forEach(s=>{
+        ball(g,skin,s*.153,1.79,0,.034,.055,.035);
+        ball(g,black||hair,s*.061,1.825,.137,.031,.013,.012);
+        ball(g,eye,s*.061,1.824,.145,.023,.012,.008);ball(g,iris,s*.061,1.824,.153,.009,.01,.006);
+        const brow=ball(g,hair,s*.062,1.858,.139,.039,.009,.012);brow.rotation.z=s*.08;
+      });
+      ball(g,skinHi,0,1.785,.151,.022,.052,.025);ball(g,skin,0,1.755,.171,.031,.022,.025);
+      ball(g,shadow,0,1.704,.144,.037,.006,.006);ball(g,skinHi,0,1.68,.12,.055,.028,.025);
+      // Short dark textured hairstyle, swept hairline and side volume.
+      ball(g,hair,0,1.965,-.005,.16,.095,.145);ball(g,hair,0,1.925,.078,.145,.055,.095);
+      for(let i=0;i<9;i++){const t=ball(g,hair,-.12+i*.03,1.997+Math.sin(i*.8)*.018,.005,.035,.055,.055);t.rotation.z=-.18;}
+      // Arms are independent pivots for the current walk animation.
+      const armL=new THREE.Group(),armR=new THREE.Group();armL.position.set(-.29,1.43,0);armR.position.set(.29,1.43,0);g.add(armL,armR);
+      [armL,armR].forEach((a,i)=>{
+        const s=i===0?-1:1;ball(a,jacket,s*.01,-.105,0,.115,.19,.13);
+        cyl(a,jacket,s*.012,-.285,0,.085,.105,.27);ball(a,jacketHi,s*.012,-.43,0,.09,.055,.105);
+        cyl(a,skin,s*.012,-.55,-.002,.055,.068,.19);ball(a,skinHi,s*.012,-.65,.005,.065,.07,.065);
+        ball(a,skin,s*.055,-.65,.02,.025,.045,.028);
+        for(let k=0;k<3;k++)ball(a,skinHi,s*(.015+k*.025),-.69,.015,.012,.035,.014);
+      });
+      const chain=new THREE.Mesh(new THREE.TorusGeometry(.105,.006,6,32,Math.PI),metal);chain.rotation.x=Math.PI;chain.position.set(0,1.47,-.12);g.add(chain);
+      ball(g,metal,0,1.355,-.13,.012,.022,.008);
       return {g,armL,armR,legL,legR};
     }
     const playerData = createMainCharacter();
