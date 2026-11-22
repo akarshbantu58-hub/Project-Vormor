@@ -1,0 +1,1458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>WILD HORIZON — Nova City Engine</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #060a12; touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+</style>
+</head>
+<body>
+<script>
+(function() {
+  'use strict';
+
+  const CDN_SOURCES = [
+    'https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.min.js',
+    'https://unpkg.com/three@0.146.0/build/three.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/three.js/r146/three.min.js'
+  ];
+
+  function notifyAndroid(method, arg) {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge[method] === 'function') {
+        if (arg !== undefined) window.AndroidBridge[method](arg);
+        else window.AndroidBridge[method]();
+      }
+    } catch (e) {}
+  }
+
+  function loadScriptWithFallback(idx) {
+    if (window.THREE) {
+      bootEngine();
+      return;
+    }
+    if (idx >= CDN_SOURCES.length) {
+      notifyAndroid('onEngineError', 'Failed to load Three.js WebGL library from CDN.');
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = CDN_SOURCES[idx];
+    s.async = true;
+    s.onload = () => {
+      if (window.THREE) bootEngine();
+      else loadScriptWithFallback(idx + 1);
+    };
+    s.onerror = () => loadScriptWithFallback(idx + 1);
+    document.head.appendChild(s);
+  }
+
+  function bootEngine() {
+    try {
+      initNovaCity();
+      notifyAndroid('onEngineReady');
+    } catch (err) {
+      notifyAndroid('onEngineError', String(err && err.message ? err.message : err));
+    }
+  }
+
+  function initNovaCity() {
+    // =========================================================================
+    // 1. RENDERER, SCENE, CAMERA & HDR ENVIRONMENT REFLECTION GENERATOR
+    // =========================================================================
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    let highDpr = true;
+    function applyRendererSize() {
+      const cap = highDpr ? 1.75 : 1.0;
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, cap));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    applyRendererSize();
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.12;
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf0936d);
+    scene.fog = new THREE.FogExp2(0xd98772, 0.0032);
+
+    const camera = new THREE.PerspectiveCamera(64, window.innerWidth / window.innerHeight, 0.15, 560);
+    const pmremGen = new THREE.PMREMGenerator(renderer);
+    pmremGen.compileEquirectangularShader();
+
+    const state = {
+      credits: 1250,
+      stamina: 100,
+      timePreset: 2, // Golden Hour Sunset
+      isRaining: false,
+      camDistMode: 0,
+      isSeated: false,
+      seatReturnPos: null,
+      audioEnabled: true,
+      zoneLabel: 'Horizon Ave — Downtown'
+    };
+
+    // Procedural Sky Dome for Real-Time Reflections & Sky Gradient
+    const skyEnvScene = new THREE.Scene();
+    const skyGradMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      uniforms: {
+        uTop: { value: new THREE.Color(0x234c8c) },
+        uHoriz: { value: new THREE.Color(0xff9b6a) },
+        uSunCol: { value: new THREE.Color(0xffe0a3) },
+        uSunDir: { value: new THREE.Vector3(-0.7, 0.22, 0.6).normalize() }
+      },
+      vertexShader: `
+        varying vec3 vDir;
+        void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+      `,
+      fragmentShader: `
+        uniform vec3 uTop, uHoriz, uSunCol, uSunDir;
+        varying vec3 vDir;
+        void main() {
+          vec3 col = mix(uHoriz, uTop, pow(clamp(vDir.y, 0.0, 1.0), 0.55));
+          float sunAmt = pow(max(dot(normalize(vDir), uSunDir), 0.0), 36.0);
+          col += uSunCol * sunAmt * 1.4;
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `
+    });
+    const envDome = new THREE.Mesh(new THREE.SphereGeometry(20, 24, 16), skyGradMat);
+    skyEnvScene.add(envDome);
+
+    const visibleSkyDome = new THREE.Mesh(new THREE.SphereGeometry(320, 24, 16), skyGradMat);
+    scene.add(visibleSkyDome);
+
+    let envRT = null;
+    function rebuildEnvReflections() {
+      if (envRT) envRT.dispose();
+      envRT = pmremGen.fromScene(skyEnvScene, 0.035);
+      scene.environment = envRT.texture;
+    }
+
+    // =========================================================================
+    // 2. REAL-LIFE PROCEDURAL PBR TEXTURES (ALBEDO + NORMAL + ROUGHNESS MAPS)
+    // =========================================================================
+    function makeTex(size, drawFn, rx = 1, ry = 1, isColor = true) {
+      const c = document.createElement('canvas'); c.width = size; c.height = size;
+      drawFn(c.getContext('2d'), size);
+      const t = new THREE.CanvasTexture(c);
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(rx, ry);
+      if (isColor) t.encoding = THREE.sRGBEncoding;
+      t.anisotropy = 4;
+      return t;
+    }
+
+    function makeNormalFromHeight(size, heightFn, rx = 1, ry = 1, strength = 2.4) {
+      const h = new Float32Array(size * size);
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) h[y * size + x] = heightFn(x, y, size);
+      }
+      return makeTex(size, (ctx) => {
+        const img = ctx.createImageData(size, size);
+        for (let y = 0; y < size; y++) {
+          for (let x = 0; x < size; x++) {
+            const xm = (x - 1 + size) % size, xp = (x + 1) % size;
+            const ym = (y - 1 + size) % size, yp = (y + 1) % size;
+            const dx = (h[y * size + xp] - h[y * size + xm]) * strength;
+            const dy = (h[yp * size + x] - h[ym * size + x]) * strength;
+            const len = Math.hypot(dx, dy, 1.0);
+            const idx = (y * size + x) * 4;
+            img.data[idx]   = ((-dx / len) * 0.5 + 0.5) * 255;
+            img.data[idx+1] = ((-dy / len) * 0.5 + 0.5) * 255;
+            img.data[idx+2] = ((1.0 / len) * 0.5 + 0.5) * 255;
+            img.data[idx+3] = 255;
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+      }, rx, ry, false);
+    }
+
+    const textures = {
+      asphaltCol: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#20242b'; ctx.fillRect(0,0,s,s);
+        for (let i=0; i<4800; i++) {
+          const v = 22 + Math.random()*32;
+          ctx.fillStyle = `rgb(${v},${v+2},${v+5})`;
+          ctx.fillRect(Math.random()*s, Math.random()*s, 2, 2);
+        }
+      }, 18, 18),
+      asphaltNorm: makeNormalFromHeight(128, (x, y) => Math.sin(x*1.7)*Math.cos(y*1.9)*0.3 + Math.random()*0.4, 18, 18, 1.5),
+      asphaltRough: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#cfcfcf'; ctx.fillRect(0,0,s,s);
+        for (let i=0; i<22; i++) {
+          const gx = Math.random()*s, gy = Math.random()*s, r = 16 + Math.random()*34;
+          const gr = ctx.createRadialGradient(gx,gy,2,gx,gy,r);
+          gr.addColorStop(0, 'rgba(35,35,35,0.8)');
+          gr.addColorStop(1, 'rgba(200,200,200,0)');
+          ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(gx,gy,r,0,Math.PI*2); ctx.fill();
+        }
+      }, 10, 10, false),
+
+      sidewalkCol: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#969ba3'; ctx.fillRect(0,0,s,s);
+        ctx.strokeStyle = '#686e75'; ctx.lineWidth = 3;
+        for (let i=0; i<=s; i+=64) {
+          ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,s); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(s,i); ctx.stroke();
+        }
+        for (let i=0; i<1800; i++) {
+          ctx.fillStyle = `rgba(255,255,255,${Math.random()*0.06})`;
+          ctx.fillRect(Math.random()*s, Math.random()*s, 2, 2);
+        }
+      }, 24, 24),
+      sidewalkNorm: makeNormalFromHeight(128, (x, y) => ((x%32<2 || y%32<2) ? -0.8 : Math.random()*0.15), 24, 24, 2.2),
+
+      brickCol: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#854c3c'; ctx.fillRect(0,0,s,s);
+        ctx.fillStyle = '#a49e96';
+        for (let y=0; y<s; y+=16) {
+          ctx.fillRect(0, y, s, 2);
+          const off = (y/16)%2 === 0 ? 0 : 16;
+          for (let x=off; x<s; x+=32) ctx.fillRect(x, y, 2, 16);
+        }
+      }, 3, 2),
+      brickNorm: makeNormalFromHeight(128, (x, y) => {
+        const mortarY = (y % 8) < 1;
+        const off = Math.floor(y/8)%2 === 0 ? 0 : 8;
+        const mortarX = ((x + off) % 16) < 1;
+        return (mortarX || mortarY) ? -0.9 : 0.2 + Math.random()*0.08;
+      }, 3, 2, 2.6),
+
+      woodCol: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#754e32'; ctx.fillRect(0,0,s,s);
+        for (let y=0; y<s; y+=12) {
+          ctx.fillStyle = `rgba(30,14,5,${0.12 + (y%24===0?0.1:0)})`;
+          ctx.fillRect(0, y, s, 2);
+        }
+      }, 3, 3),
+      grassCol: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#2f5e32'; ctx.fillRect(0,0,s,s);
+        for (let i=0; i<2800; i++) {
+          ctx.fillStyle = Math.random()>0.5 ? '#3e733b' : '#254a26';
+          ctx.fillRect(Math.random()*s, Math.random()*s, 2, 4);
+        }
+      }, 10, 10),
+      sandCol: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#d4c094'; ctx.fillRect(0,0,s,s);
+        for (let i=0; i<2000; i++) {
+          ctx.fillStyle = Math.random()>0.5 ? '#e2cfa3' : '#bfa97c';
+          ctx.fillRect(Math.random()*s, Math.random()*s, 2, 2);
+        }
+      }, 8, 4),
+      tileCol: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#dfe4ea'; ctx.fillRect(0,0,s,s);
+        ctx.strokeStyle = '#b4bcc6'; ctx.lineWidth = 2;
+        for (let i=0; i<=s; i+=32) {
+          ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,s); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(s,i); ctx.stroke();
+        }
+      }, 4, 4),
+      facadeCol: makeTex(256, (ctx, s) => {
+        ctx.fillStyle = '#1b2b3a'; ctx.fillRect(0,0,s,s);
+        for (let y=8; y<s; y+=32) {
+          for (let x=8; x<s; x+=32) {
+            const lit = Math.random() > 0.42;
+            ctx.fillStyle = lit ? '#7ab2db' : '#182634';
+            ctx.fillRect(x, y, 22, 22);
+            ctx.fillStyle = 'rgba(255,255,255,0.22)';
+            ctx.fillRect(x, y, 22, 4);
+          }
+        }
+      }, 2, 5)
+    };
+
+    const mats = {
+      asphalt: new THREE.MeshStandardMaterial({
+        map: textures.asphaltCol, normalMap: textures.asphaltNorm, roughnessMap: textures.asphaltRough,
+        roughness: 0.78, metalness: 0.14, envMapIntensity: 1.15
+      }),
+      sidewalk: new THREE.MeshStandardMaterial({
+        map: textures.sidewalkCol, normalMap: textures.sidewalkNorm,
+        roughness: 0.85, metalness: 0.05, envMapIntensity: 0.85
+      }),
+      grass: new THREE.MeshStandardMaterial({ map: textures.grassCol, roughness: 0.94 }),
+      sand: new THREE.MeshStandardMaterial({ map: textures.sandCol, roughness: 0.92 }),
+      concrete: new THREE.MeshStandardMaterial({ color: 0xc2c8cf, roughness: 0.8, metalness: 0.06 }),
+      darkConcrete: new THREE.MeshStandardMaterial({ color: 0x454b54, roughness: 0.82, metalness: 0.08 }),
+      brick: new THREE.MeshStandardMaterial({ map: textures.brickCol, normalMap: textures.brickNorm, roughness: 0.82 }),
+      wood: new THREE.MeshStandardMaterial({ map: textures.woodCol, roughness: 0.58 }),
+      tile: new THREE.MeshStandardMaterial({ map: textures.tileCol, roughness: 0.35, metalness: 0.08 }),
+      metal: new THREE.MeshStandardMaterial({ color: 0x9aa4b0, roughness: 0.22, metalness: 0.9, envMapIntensity: 1.4 }),
+      darkMetal: new THREE.MeshStandardMaterial({ color: 0x242930, roughness: 0.32, metalness: 0.85 }),
+      brass: new THREE.MeshStandardMaterial({ color: 0xe0b95c, roughness: 0.2, metalness: 0.92, envMapIntensity: 1.5 }),
+      glass: new THREE.MeshPhysicalMaterial({
+        color: 0xbce2fa, roughness: 0.04, metalness: 0.15,
+        transparent: true, opacity: 0.44, clearcoat: 1.0, clearcoatRoughness: 0.04, envMapIntensity: 1.8
+      }),
+      curtain: new THREE.MeshStandardMaterial({ color: 0xe2d8ca, roughness: 0.9, side: THREE.DoubleSide }),
+      facade: new THREE.MeshStandardMaterial({ map: textures.facadeCol, roughness: 0.14, metalness: 0.65, envMapIntensity: 1.6 })
+    };
+
+    // =========================================================================
+    // 3. LIGHTING, RAIN & GERSTNER WATER PHYSICS SHADER
+    // =========================================================================
+    const hemiLight = new THREE.HemisphereLight(0xffd2b3, 0x333c4a, 0.72);
+    scene.add(hemiLight);
+
+    const sunLight = new THREE.DirectionalLight(0xffb478, 1.45);
+    sunLight.position.set(-100, 38, 65);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.set(1536, 1536);
+    sunLight.shadow.camera.near = 10; sunLight.shadow.camera.far = 300;
+    const sd = 105;
+    sunLight.shadow.camera.left = -sd; sunLight.shadow.camera.right = sd;
+    sunLight.shadow.camera.top = sd; sunLight.shadow.camera.bottom = -sd;
+    sunLight.shadow.bias = -0.0006;
+    scene.add(sunLight);
+
+    const waterUniforms = {
+      uTime: { value: 0 },
+      uSunDir: { value: new THREE.Vector3(-0.7, 0.25, 0.6).normalize() },
+      uSunColor: { value: new THREE.Color(0xffc994) },
+      uSkyColor: { value: new THREE.Color(0xff9b6a) },
+      uDeepColor: { value: new THREE.Color(0x05283d) },
+      uShallowColor: { value: new THREE.Color(0x136a7a) }
+    };
+
+    const oceanMat = new THREE.ShaderMaterial({
+      uniforms: waterUniforms,
+      transparent: true,
+      vertexShader: `
+        uniform float uTime;
+        varying vec3 vWorldPos;
+        varying vec3 vNormal;
+        varying float vWaveH;
+
+        void main() {
+          vec4 world = modelMatrix * vec4(position, 1.0);
+          float x = world.x;
+          float z = world.z;
+
+          float w1 = sin(x * 0.14 + z * 0.11 + uTime * 1.45) * 0.22;
+          float w2 = sin(x * -0.23 + z * 0.19 + uTime * 1.95) * 0.14;
+          float w3 = cos(x * 0.41 + z * 0.36 - uTime * 2.4) * 0.07;
+          float w4 = sin(x * 0.72 - z * 0.58 + uTime * 3.1) * 0.035;
+
+          float h = w1 + w2 + w3 + w4;
+          world.y += h;
+          vWaveH = h;
+
+          float dhdx = 0.14*0.22*cos(x*0.14 + z*0.11 + uTime*1.45)
+                     - 0.23*0.14*cos(x*-0.23 + z*0.19 + uTime*1.95)
+                     - 0.41*0.07*sin(x*0.41 + z*0.36 - uTime*2.4)
+                     + 0.72*0.035*cos(x*0.72 - z*0.58 + uTime*3.1);
+          float dhdz = 0.11*0.22*cos(x*0.14 + z*0.11 + uTime*1.45)
+                     + 0.19*0.14*cos(x*-0.23 + z*0.19 + uTime*1.95)
+                     - 0.36*0.07*sin(x*0.41 + z*0.36 - uTime*2.4)
+                     - 0.58*0.035*cos(x*0.72 - z*0.58 + uTime*3.1);
+
+          vNormal = normalize(vec3(-dhdx, 1.0, -dhdz));
+          vWorldPos = world.xyz;
+          gl_Position = projectionMatrix * viewMatrix * world;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uSunDir, uSunColor, uSkyColor, uDeepColor, uShallowColor;
+        varying vec3 vWorldPos;
+        varying vec3 vNormal;
+        varying float vWaveH;
+
+        void main() {
+          vec3 N = normalize(vNormal);
+          vec3 V = normalize(cameraPosition - vWorldPos);
+          vec3 R = reflect(-V, N);
+
+          float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(N, V), 0.0), 4.5);
+
+          float coastFactor = 1.0 - smoothstep(72.0, 105.0, vWorldPos.z);
+          vec3 waterBase = mix(uDeepColor, uShallowColor, coastFactor * 0.75);
+          vec3 reflCol = mix(uSkyColor * 0.85, uSunColor, pow(max(R.y * 0.5 + 0.5, 0.0), 2.0) * 0.35);
+
+          vec3 col = mix(waterBase, reflCol, clamp(fresnel, 0.0, 0.88));
+
+          float spec = pow(max(dot(R, normalize(uSunDir)), 0.0), 140.0);
+          col += uSunColor * spec * 1.9;
+
+          float shoreLine = smoothstep(75.5, 72.1, vWorldPos.z + sin(vWorldPos.x * 0.3 + uTime * 2.0) * 0.5);
+          float crestFoam = smoothstep(0.28, 0.44, vWaveH) * 0.45;
+          float foam = clamp(shoreLine * 0.75 + crestFoam, 0.0, 1.0);
+          col = mix(col, vec3(0.92, 0.96, 1.0), foam * 0.82);
+
+          gl_FragColor = vec4(col, 0.93);
+        }
+      `
+    });
+
+    const ocean = new THREE.Mesh(new THREE.PlaneGeometry(540, 260, 128, 96), oceanMat);
+    ocean.rotation.x = -Math.PI / 2;
+    ocean.position.set(0, -0.75, 200);
+    scene.add(ocean);
+
+    function sampleWaveHeight(x, z, t) {
+      return -0.75 + Math.sin(x * 0.14 + z * 0.11 + t * 1.45) * 0.22 + Math.sin(x * -0.23 + z * 0.19 + t * 1.95) * 0.14;
+    }
+
+    // Rain Particles
+    const rainCount = 1800;
+    const rainGeo = new THREE.BufferGeometry();
+    const rainPos = new Float32Array(rainCount * 3);
+    for (let i = 0; i < rainCount; i++) {
+      rainPos[i * 3] = (Math.random() - 0.5) * 85;
+      rainPos[i * 3 + 1] = Math.random() * 40;
+      rainPos[i * 3 + 2] = (Math.random() - 0.5) * 85;
+    }
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+    const rainPoints = new THREE.Points(
+      rainGeo,
+      new THREE.PointsMaterial({ color: 0xb8dcff, size: 0.2, transparent: true, opacity: 0.58 })
+    );
+    rainPoints.visible = false;
+    scene.add(rainPoints);
+
+    const streetLampBulbs = [], streetLights = [], interiorLights = [];
+
+    // =========================================================================
+    // 4. COLLISION, INTERACTABLES & SYNTHESIZED AUDIO
+    // =========================================================================
+    const colliders = [], cameraOccluders = [], interactables = [], animatables = [];
+
+    function addCollider(minX, minZ, maxX, maxZ, minY = 0, maxY = 6, activeFn = null) {
+      colliders.push({ minX, maxX, minZ, maxZ, minY, maxY, activeFn });
+    }
+    function addBox(w, h, d, x, y, z, mat, parent = scene, cast = true, occludeCam = false) {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      mesh.position.set(x, y, z);
+      mesh.castShadow = cast;
+      mesh.receiveShadow = true;
+      parent.add(mesh);
+      if (occludeCam) cameraOccluders.push(mesh);
+      return mesh;
+    }
+
+    let audioCtx = null;
+    function playTone(freq, dur = 0.08, type = 'sine', vol = 0.06) {
+      if (!state.audioEnabled) return;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + dur);
+      } catch (e) {}
+    }
+
+    function showToast(msg) {
+      notifyAndroid('onToast', String(msg));
+    }
+
+    // =========================================================================
+    // 5. WORLD ROADS, HARBOUR, BEACH, PALM TREES & YACHTS
+    // =========================================================================
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), mats.sidewalk);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    const roadCenters = [-60, 0, 60];
+    roadCenters.forEach(z => {
+      const r = new THREE.Mesh(new THREE.PlaneGeometry(240, 12), mats.asphalt);
+      r.rotation.x = -Math.PI / 2; r.position.set(0, 0.015, z); r.receiveShadow = true; scene.add(r);
+      for (let x = -114; x <= 114; x += 8) {
+        if (Math.abs(x) < 7 || Math.abs(x - 60) < 7 || Math.abs(x + 60) < 7) continue;
+        const dash = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.2), new THREE.MeshBasicMaterial({ color: 0xf5c442 }));
+        dash.rotation.x = -Math.PI / 2; dash.position.set(x, 0.025, z); scene.add(dash);
+      }
+    });
+
+    roadCenters.forEach(x => {
+      const r = new THREE.Mesh(new THREE.PlaneGeometry(12, 175), mats.asphalt);
+      r.rotation.x = -Math.PI / 2; r.position.set(x, 0.019, -12); r.receiveShadow = true; scene.add(r);
+      for (let z = -96; z <= 68; z += 8) {
+        if (Math.abs(z) < 7 || Math.abs(z - 60) < 7 || Math.abs(z + 60) < 7) continue;
+        const dash = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 3.6), new THREE.MeshBasicMaterial({ color: 0xf5c442 }));
+        dash.rotation.x = -Math.PI / 2; dash.position.set(x, 0.027, z); scene.add(dash);
+      }
+    });
+
+    const stripeMat = new THREE.MeshBasicMaterial({ color: 0xe6ecf2 });
+    roadCenters.forEach(ix => {
+      roadCenters.forEach(iz => {
+        if (iz > 60) return;
+        for (let s = -4.2; s <= 4.2; s += 1.4) {
+          const c1 = new THREE.Mesh(new THREE.PlaneGeometry(0.65, 2.6), stripeMat);
+          c1.rotation.x = -Math.PI / 2; c1.position.set(ix + s, 0.03, iz + 7.4); scene.add(c1);
+          const c2 = c1.clone(); c2.position.set(ix + s, 0.03, iz - 7.4); scene.add(c2);
+          const c3 = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.65), stripeMat);
+          c3.rotation.x = -Math.PI / 2; c3.position.set(ix + 7.4, 0.03, iz + s); scene.add(c3);
+          const c4 = c3.clone(); c4.position.set(ix - 7.4, 0.03, iz + s); scene.add(c4);
+        }
+      });
+    });
+
+    [-30, 30].forEach(bx => [-30, 30].forEach(bz => addBox(44, 0.16, 44, bx, 0.08, bz, mats.sidewalk, scene, false)));
+
+    // Seawall, Beach, Wooden Pier & Ocean Colliders
+    addBox(170, 1.4, 5, -20, 0.45, 70, mats.concrete);
+    const beach = new THREE.Mesh(new THREE.PlaneGeometry(90, 26), mats.sand);
+    beach.rotation.x = -Math.PI / 2; beach.rotation.z = -0.05; beach.position.set(96, -0.35, 80); beach.receiveShadow = true; scene.add(beach);
+
+    addBox(6.5, 0.35, 28, 12, 0.6, 86, mats.wood);
+    for (let pz = 74; pz <= 98; pz += 6) {
+      addBox(0.35, 2.2, 0.35, 9, -0.1, pz, mats.darkMetal);
+      addBox(0.35, 2.2, 0.35, 15, -0.1, pz, mats.darkMetal);
+    }
+    addCollider(-130, 71.8, 8.8, 73.5);
+    addCollider(15.2, 71.8, 130, 73.5);
+    addCollider(8.5, 72, 9.0, 100.5);
+    addCollider(15.0, 72, 15.5, 100.5);
+    addCollider(8.5, 99.8, 15.5, 100.5);
+
+    function createYacht(x, z, rotY) {
+      const g = new THREE.Group();
+      addBox(3.4, 1.2, 9.5, 0, 0.3, 0, new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.18, metalness: 0.15 }), g);
+      addBox(2.4, 1.1, 4.2, 0, 1.4, -0.6, mats.glass, g);
+      addBox(2.5, 0.25, 4.4, 0, 2.05, -0.6, mats.concrete, g);
+      g.position.set(x, -0.4, z); g.rotation.y = rotY; scene.add(g);
+      animatables.push({
+        update: (dt, t) => {
+          g.position.y = sampleWaveHeight(x, z, t) + 0.15;
+          g.rotation.z = Math.sin(t * 1.4 + x) * 0.04;
+          g.rotation.x = Math.cos(t * 1.1 + z) * 0.03;
+        }
+      });
+    }
+    createYacht(3.5, 89, 0.05);
+    createYacht(21.5, 93, -0.08);
+
+    // Tropical Palm Trees
+    function createPalmTree(x, z, scale = 1) {
+      const g = new THREE.Group(); g.position.set(x, 0.16, z);
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7c5a42, roughness: 0.9 });
+      for (let s = 0; s < 5; s++) {
+        const seg = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.18 * scale * (1 - s * 0.08), 0.22 * scale * (1 - s * 0.06), 1.25 * scale, 7),
+          trunkMat
+        );
+        seg.position.set(s * 0.14 * scale, (s + 0.5) * 1.15 * scale, 0);
+        seg.rotation.z = -0.07 * s; seg.castShadow = true; g.add(seg);
+      }
+      const crown = new THREE.Group();
+      crown.position.set(0.65 * scale, 5.7 * scale, 0);
+      g.add(crown);
+      const frondMat = new THREE.MeshStandardMaterial({ color: 0x2f7d3a, roughness: 0.72, side: THREE.DoubleSide });
+      for (let f = 0; f < 7; f++) {
+        const frond = new THREE.Mesh(new THREE.PlaneGeometry(0.65 * scale, 2.9 * scale), frondMat);
+        const ang = (f / 7) * Math.PI * 2;
+        frond.position.set(Math.cos(ang) * 1.3 * scale, -0.2, Math.sin(ang) * 1.3 * scale);
+        frond.rotation.y = -ang + Math.PI / 2;
+        frond.rotation.x = Math.PI / 2.5;
+        frond.castShadow = true;
+        crown.add(frond);
+      }
+      scene.add(g);
+      addCollider(x - 0.35, z - 0.35, x + 0.35, z + 0.35, 0, 5);
+      animatables.push({ update: (dt, t) => { crown.rotation.z = Math.sin(t * 1.3 + x) * 0.04; } });
+    }
+    [[-38, 67.5], [-16, 67.5], [24, 67.5], [44, 67.5], [7.5, -7.5], [-7.5, 7.5], [7.5, 7.5], [30, -7.5]]
+      .forEach(([px, pz], i) => createPalmTree(px, pz, 0.95 + (i % 2) * 0.15));
+
+    // Distant Archipelago Islands
+    [[-115, 220, 48, 26], [85, 245, 62, 34], [195, 195, 42, 20]].forEach(([x, z, r, h]) => {
+      const m = new THREE.Mesh(new THREE.ConeGeometry(r, h, 9), new THREE.MeshStandardMaterial({ color: 0x355442, roughness: 0.95 }));
+      m.position.set(x, h / 2 - 1.5, z); scene.add(m);
+    });
+
+    // =========================================================================
+    // 6. INTERACTIVE DOORS, WINDOWS, PROPS & ENTERABLE BUILDINGS
+    // =========================================================================
+    function createDoor(opts) {
+      const { x, y = 0.16, z, rotY = 0, width = 1.4, height = 2.45, type = 'swing', label = 'Door', doubleSlide = false } = opts;
+      const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = rotY; scene.add(g);
+      addBox(0.1, height, 0.18, -width / 2 - 0.05, height / 2, 0, mats.darkMetal, g);
+      addBox(0.1, height, 0.18, width / 2 + 0.05, height / 2, 0, mats.darkMetal, g);
+      addBox(width + 0.2, 0.1, 0.18, 0, height + 0.05, 0, mats.darkMetal, g);
+
+      let isOpen = false, openProgress = 0;
+      const cWidth = Math.abs(Math.cos(rotY)) * width + Math.abs(Math.sin(rotY)) * 0.35;
+      const cDepth = Math.abs(Math.sin(rotY)) * width + Math.abs(Math.cos(rotY)) * 0.35;
+      addCollider(x - cWidth / 2, z - cDepth / 2, x + cWidth / 2, z + cDepth / 2, y, y + height, () => openProgress < 0.55);
+
+      if (type === 'swing') {
+        const pivot = new THREE.Group(); pivot.position.set(-width / 2, 0, 0); g.add(pivot);
+        addBox(width, height, 0.08, width / 2, height / 2, 0, mats.wood, pivot);
+        addBox(width * 0.65, height * 0.45, 0.1, width / 2, height * 0.65, 0, mats.glass, pivot, false);
+        addBox(0.18, 0.05, 0.16, width - 0.18, 1.05, 0, mats.brass, pivot, false);
+        animatables.push({
+          update: (dt) => {
+            openProgress += ((isOpen ? 1 : 0) - openProgress) * Math.min(1, dt * 7);
+            pivot.rotation.y = -openProgress * (Math.PI * 0.48);
+          }
+        });
+      } else {
+        const leafL = addBox(width / 2, height, 0.07, -width / 4, height / 2, 0, mats.glass, g, false);
+        let leafR = null;
+        if (doubleSlide) leafR = addBox(width / 2, height, 0.07, width / 4, height / 2, 0, mats.glass, g, false);
+        else { leafL.scale.x = 2; leafL.position.x = 0; }
+        animatables.push({
+          update: (dt) => {
+            openProgress += ((isOpen ? 1 : 0) - openProgress) * Math.min(1, dt * 6.5);
+            if (doubleSlide) {
+              leafL.position.x = -width / 4 - openProgress * (width / 2 - 0.1);
+              leafR.position.x = width / 4 + openProgress * (width / 2 - 0.1);
+            } else leafL.position.x = openProgress * (width - 0.1);
+          }
+        });
+      }
+      interactables.push({
+        pos: new THREE.Vector3(x, y + 1.2, z), radius: 2.9,
+        getPrompt: () => `${isOpen ? 'Close' : 'Open'} ${label}`,
+        interact: () => { isOpen = !isOpen; playTone(isOpen ? 420 : 300, 0.1, 'triangle', 0.05); }
+      });
+    }
+
+    function createWindow(opts) {
+      const { x, y = 1.6, z, rotY = 0, width = 2.0, height = 1.4 } = opts;
+      const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = rotY; scene.add(g);
+      addBox(width + 0.14, 0.09, 0.18, 0, height / 2 + 0.04, 0, mats.darkMetal, g);
+      addBox(width + 0.14, 0.09, 0.18, 0, -height / 2 - 0.04, 0, mats.darkMetal, g);
+      addBox(0.09, height, 0.18, -width / 2 - 0.04, 0, 0, mats.darkMetal, g);
+      addBox(0.09, height, 0.18, width / 2 + 0.04, 0, 0, mats.darkMetal, g);
+      addBox(width / 2, height, 0.04, -width / 4, 0, -0.02, mats.glass, g, false);
+      const pane = addBox(width / 2, height, 0.04, width / 4, 0, 0.02, mats.glass, g, false);
+      const blinds = addBox(width - 0.1, height - 0.08, 0.03, 0, height / 2 - 0.08, -0.1, mats.curtain, g, false);
+      blinds.scale.y = 0.12;
+
+      let winOpen = false, prog = 0, blindsClosed = false;
+      animatables.push({
+        update: (dt) => {
+          prog += ((winOpen ? 1 : 0) - prog) * Math.min(1, dt * 6);
+          pane.position.x = width / 4 - prog * (width * 0.44);
+          const ts = blindsClosed ? 1.0 : 0.12;
+          blinds.scale.y += (ts - blinds.scale.y) * Math.min(1, dt * 7);
+          blinds.position.y = (height / 2) - (blinds.scale.y * height) / 2;
+        }
+      });
+      interactables.push({
+        pos: new THREE.Vector3(x, y, z), radius: 2.8,
+        getPrompt: () => `${winOpen ? 'Close' : 'Open'} Window`,
+        interact: () => { winOpen = !winOpen; playTone(winOpen ? 520 : 380, 0.08); }
+      });
+      interactables.push({
+        pos: new THREE.Vector3(x, y - 0.5, z), radius: 2.3,
+        getPrompt: () => `${blindsClosed ? 'Open' : 'Close'} Blinds`,
+        interact: () => { blindsClosed = !blindsClosed; playTone(260, 0.06); }
+      });
+    }
+
+    function createChair(x, y, z, rotY = 0, label = 'Chair', color = 0x5d4332) {
+      const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = rotY; scene.add(g);
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+      addBox(0.54, 0.08, 0.54, 0, 0.46, 0, mat, g);
+      addBox(0.54, 0.52, 0.08, 0, 0.74, -0.23, mat, g);
+      [[-0.22, -0.22], [0.22, -0.22], [-0.22, 0.22], [0.22, 0.22]].forEach(p => addBox(0.06, 0.46, 0.06, p[0], 0.23, p[1], mats.darkMetal, g));
+      interactables.push({
+        pos: new THREE.Vector3(x, y + 0.6, z), radius: 2.2,
+        getPrompt: () => state.isSeated ? 'Stand Up' : `Sit on ${label}`,
+        interact: () => {
+          if (state.isSeated) standUp();
+          else {
+            state.isSeated = true; state.seatReturnPos = player.position.clone();
+            player.position.set(x, y + 0.12, z); playerMesh.rotation.y = rotY;
+            showToast(`Seated on ${label} — move stick to stand`); playTone(320, 0.08);
+          }
+        }
+      });
+    }
+
+    function createLightSwitch(x, y, z, targetLight, label = 'Room Lights') {
+      addBox(0.14, 0.22, 0.06, x, y, z, mats.concrete);
+      const led = addBox(0.04, 0.04, 0.07, x, y + 0.04, z, new THREE.MeshBasicMaterial({ color: 0x55ff88 }));
+      interactables.push({
+        pos: new THREE.Vector3(x, y, z), radius: 2.3,
+        getPrompt: () => `Toggle ${label}`,
+        interact: () => {
+          targetLight.visible = !targetLight.visible;
+          led.material.color.setHex(targetLight.visible ? 0x55ff88 : 0xff4444);
+          playTone(targetLight.visible ? 680 : 440, 0.05, 'square', 0.04);
+          showToast(`${label}: ${targetLight.visible ? 'ON' : 'OFF'}`);
+        }
+      });
+    }
+
+    function createScreen(x, y, z, rotY, w, h, label, onColor = 0x2672c9) {
+      const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = rotY; scene.add(g);
+      addBox(w + 0.12, h + 0.12, 0.08, 0, 0, 0, mats.darkMetal, g);
+      const screenMat = new THREE.MeshBasicMaterial({ color: onColor });
+      const scr = new THREE.Mesh(new THREE.PlaneGeometry(w, h), screenMat); scr.position.z = 0.045; g.add(scr);
+      let ch = 0; const cols = [onColor, 0x218c6a, 0xff5ea8, 0x11151c];
+      interactables.push({
+        pos: new THREE.Vector3(x, y, z), radius: 2.6,
+        getPrompt: () => `${label}: Switch Channel`,
+        interact: () => {
+          ch = (ch + 1) % cols.length; screenMat.color.setHex(cols[ch]);
+          playTone(580, 0.07); showToast(ch === 3 ? `${label} Off` : `${label} Channel ${ch + 1}`);
+        }
+      });
+    }
+
+    function buildRoom(opts) {
+      const { minX, maxX, minZ, maxZ, height = 4.2, wallMat = mats.concrete, floorMat = mats.tile, doorSide = 'S', doorPos = (minX + maxX) / 2, doorWidth = 1.6, doorType = 'slide', label = 'Building', winSide = null } = opts;
+      const w = maxX - minX, d = maxZ - minZ, cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2, baseY = 0.16, wallT = 0.28;
+      addBox(w, 0.12, d, cx, baseY + 0.05, cz, floorMat, scene, false);
+      addBox(w + 0.3, 0.26, d + 0.3, cx, baseY + height + 0.13, cz, mats.darkConcrete, scene, true, true);
+
+      const pt = new THREE.PointLight(0xffe8c8, 1.2, 16); pt.position.set(cx, baseY + height - 0.5, cz);
+      scene.add(pt); interiorLights.push(pt);
+
+      function wall(axis, fc, s, e, oa, ow, isD, isW) {
+        if (isD) {
+          const lL = (oa - ow / 2) - s, rL = e - (oa + ow / 2), linH = height - 2.55;
+          if (lL > 0.1) {
+            const lx = axis === 'x' ? s + lL / 2 : fc, lz = axis === 'z' ? s + lL / 2 : fc;
+            addBox(axis === 'x' ? lL : wallT, height, axis === 'z' ? lL : wallT, lx, baseY + height / 2, lz, wallMat, scene, true, true);
+            addCollider(lx - (axis === 'x' ? lL : wallT) / 2, lz - (axis === 'z' ? lL : wallT) / 2, lx + (axis === 'x' ? lL : wallT) / 2, lz + (axis === 'z' ? lL : wallT) / 2, baseY, baseY + height);
+          }
+          if (rL > 0.1) {
+            const rx = axis === 'x' ? (oa + ow / 2) + rL / 2 : fc, rz = axis === 'z' ? (oa + ow / 2) + rL / 2 : fc;
+            addBox(axis === 'x' ? rL : wallT, height, axis === 'z' ? rL : wallT, rx, baseY + height / 2, rz, wallMat, scene, true, true);
+            addCollider(rx - (axis === 'x' ? rL : wallT) / 2, rz - (axis === 'z' ? rL : wallT) / 2, rx + (axis === 'x' ? rL : wallT) / 2, rz + (axis === 'z' ? rL : wallT) / 2, baseY, baseY + height);
+          }
+          const dx = axis === 'x' ? oa : fc, dz = axis === 'z' ? oa : fc;
+          addBox(axis === 'x' ? ow : wallT, linH, axis === 'z' ? ow : wallT, dx, baseY + 2.55 + linH / 2, dz, wallMat, scene, true, true);
+          createDoor({ x: dx, y: baseY, z: dz, rotY: axis === 'x' ? 0 : Math.PI / 2, width: ow, type: doorType, doubleSlide: ow >= 1.8, label: `${label} Door` });
+        } else if (isW) {
+          const wW = 2.2, wH = 1.4, wC = (s + e) / 2, lL = (wC - wW / 2) - s, rL = e - (wC + wW / 2);
+          if (lL > 0.1) addBox(axis === 'x' ? lL : wallT, height, axis === 'z' ? lL : wallT, axis === 'x' ? s + lL / 2 : fc, baseY + height / 2, axis === 'z' ? s + lL / 2 : fc, wallMat, scene, true, true);
+          if (rL > 0.1) addBox(axis === 'x' ? rL : wallT, height, axis === 'z' ? rL : wallT, axis === 'x' ? (wC + wW / 2) + rL / 2 : fc, baseY + height / 2, axis === 'z' ? (wC + wW / 2) + rL / 2 : fc, wallMat, scene, true, true);
+          const wx = axis === 'x' ? wC : fc, wz = axis === 'z' ? wC : fc;
+          addBox(axis === 'x' ? wW : wallT, 1.0, axis === 'z' ? wW : wallT, wx, baseY + 0.5, wz, wallMat, scene, true, true);
+          addBox(axis === 'x' ? wW : wallT, height - 2.4, axis === 'z' ? wW : wallT, wx, baseY + 2.4 + (height - 2.4) / 2, wz, wallMat, scene, true, true);
+          createWindow({ x: wx, y: baseY + 1.7, z: wz, rotY: axis === 'x' ? 0 : Math.PI / 2, width: wW, height: wH });
+          if (axis === 'x') addCollider(s, fc - wallT / 2, e, fc + wallT / 2, baseY, baseY + height);
+          else addCollider(fc - wallT / 2, s, fc + wallT / 2, e, baseY, baseY + height);
+        } else {
+          const len = e - s, wx = axis === 'x' ? (s + e) / 2 : fc, wz = axis === 'z' ? (s + e) / 2 : fc;
+          addBox(axis === 'x' ? len : wallT, height, axis === 'z' ? len : wallT, wx, baseY + height / 2, wz, wallMat, scene, true, true);
+          addCollider(wx - (axis === 'x' ? len : wallT) / 2, wz - (axis === 'z' ? len : wallT) / 2, wx + (axis === 'x' ? len : wallT) / 2, wz + (axis === 'z' ? len : wallT) / 2, baseY, baseY + height);
+        }
+      }
+      wall('x', minZ, minX, maxX, doorPos, doorWidth, doorSide === 'N', winSide === 'N');
+      wall('x', maxZ, minX, maxX, doorPos, doorWidth, doorSide === 'S', winSide === 'S');
+      wall('z', minX, minZ, maxZ, doorPos, doorWidth, doorSide === 'W', winSide === 'W');
+      wall('z', maxX, minZ, maxZ, doorPos, doorWidth, doorSide === 'E', winSide === 'E');
+      return { light: pt };
+    }
+
+    // --- BUILDINGS WITH GLOWING NEON STOREFRONT ACCENTS ---
+    const mart = buildRoom({ minX: 11, maxX: 29, minZ: -31, maxZ: -11, height: 4.5, doorSide: 'S', doorPos: 20, doorWidth: 2.2, winSide: 'W', label: 'Nova Mart' });
+    addBox(7.2, 0.75, 0.25, 20, 4.3, -10.8, new THREE.MeshBasicMaterial({ color: 0x38bdf8 }));
+    for (let sx = 14; sx <= 24; sx += 4.5) {
+      addBox(1.1, 2.0, 9.5, sx, 1.16, -21, mats.darkMetal); addCollider(sx - 0.6, -25.8, sx + 0.6, -16.2);
+      for (let pz = -25; pz <= -17; pz += 1.6) {
+        const col = [0xe03131, 0xf08c00, 0x2f9e44, 0x1971c2][Math.abs(Math.floor(sx + pz)) % 4];
+        addBox(0.85, 0.42, 0.9, sx, 1.55, pz, new THREE.MeshStandardMaterial({ color: col }));
+      }
+    }
+    addBox(4.0, 1.05, 1.0, 25.5, 0.68, -15, mats.wood); addCollider(23.5, -15.5, 27.5, -14.5);
+    createLightSwitch(18.2, 1.5, -11.3, mart.light, 'Nova Mart Lights');
+    interactables.push({
+      pos: new THREE.Vector3(25.5, 1.3, -14.2), radius: 2.6,
+      getPrompt: () => 'Buy Groceries (25 VC)',
+      interact: () => {
+        if (state.credits >= 25) {
+          state.credits -= 25; state.stamina = 100; playTone(760, 0.12); showToast('Restored Stamina to 100%');
+        } else showToast('Not enough VC (25 VC needed)');
+      }
+    });
+    // ATM & Vending
+    addBox(0.9, 1.7, 0.55, 13.5, 1.0, -10.7, new THREE.MeshStandardMaterial({ color: 0x1b4d89 }));
+    addBox(0.65, 0.45, 0.58, 13.5, 1.35, -10.68, new THREE.MeshBasicMaterial({ color: 0x74c0fc }));
+    interactables.push({
+      pos: new THREE.Vector3(13.5, 1.2, -10.0), radius: 2.4,
+      getPrompt: () => 'ATM (+250 VC)',
+      interact: () => { state.credits += 250; playTone(880, 0.14); showToast('+250 VC withdrawn from Nova Bank'); }
+    });
+    addBox(1.1, 2.0, 0.85, 26.5, 1.16, -10.5, new THREE.MeshStandardMaterial({ color: 0xc92a2a }));
+    interactables.push({
+      pos: new THREE.Vector3(26.5, 1.2, -9.8), radius: 2.4,
+      getPrompt: () => 'Vending: Cola (10 VC)',
+      interact: () => {
+        if (state.credits >= 10) {
+          state.credits -= 10; state.stamina = Math.min(100, state.stamina + 30); playTone(620, 0.1); showToast('Ice-cold Cola: +30% Stamina');
+        } else showToast('Not enough VC (10 VC needed)');
+      }
+    });
+
+    // Horizon Skyscraper + Elevator to Rooftop 52m
+    buildRoom({ minX: 33, maxX: 49, minZ: -49, maxZ: -11, height: 5.0, wallMat: mats.darkConcrete, doorSide: 'S', doorPos: 41, doorWidth: 2.2, winSide: 'W', label: 'Horizon Tower' });
+    addBox(16.2, 46.8, 38.2, 41, 28.6, -30, mats.facade, scene, true, true);
+    addBox(16.6, 0.4, 38.6, 41, 52.0, -30, mats.darkConcrete);
+    addBox(16.6, 1.2, 0.25, 41, 52.8, -10.8, mats.glass, scene, false);
+    addBox(16.6, 1.2, 0.25, 41, 52.8, -49.2, mats.glass, scene, false);
+    addBox(0.25, 1.2, 38.6, 32.8, 52.8, -30, mats.glass, scene, false);
+    addBox(0.25, 1.2, 38.6, 49.2, 52.8, -30, mats.glass, scene, false);
+    addCollider(32.5, -11.2, 49.5, -10.5, 51.5, 55);
+    addCollider(32.5, -49.5, 49.5, -48.8, 51.5, 55);
+    addCollider(32.5, -49.5, 33.2, -10.5, 51.5, 55);
+    addCollider(48.8, -49.5, 49.5, -10.5, 51.5, 55);
+    const heli = new THREE.Mesh(new THREE.RingGeometry(4.2, 4.9, 28), new THREE.MeshBasicMaterial({ color: 0xfcc419, side: THREE.DoubleSide }));
+    heli.rotation.x = -Math.PI / 2; heli.position.set(41, 52.22, -30); scene.add(heli);
+    addBox(5.2, 1.05, 1.2, 39, 0.68, -22, mats.wood); addCollider(36.4, -22.6, 41.6, -21.4);
+    createScreen(39, 1.55, -22, 0, 0.65, 0.42, 'Office PC', 0x3bc9db);
+    createChair(39, 0.16, -23.3, 0, 'Office Chair', 0x2b3038);
+    addBox(2.4, 3.2, 2.2, 46.5, 1.76, -45, mats.metal);
+    addBox(2.4, 3.2, 2.2, 46.5, 53.6, -45, mats.metal);
+    interactables.push({
+      pos: new THREE.Vector3(46.5, 1.4, -43.5), radius: 2.8,
+      getPrompt: () => 'Elevator: Floor 14 Skydeck',
+      interact: () => { player.position.set(45.5, 52.25, -42.5); velY = 0; onGround = true; playTone(520, 0.2); showToast('Floor 14 — Rooftop Helipad (52m)'); }
+    });
+    interactables.push({
+      pos: new THREE.Vector3(46.5, 53.2, -43.5), radius: 2.8,
+      getPrompt: () => 'Elevator: Ground Lobby',
+      interact: () => { player.position.set(45.5, 0.25, -42.5); velY = 0; onGround = true; playTone(390, 0.2); showToast('Horizon Tower Ground Lobby'); }
+    });
+
+    // Café Veyra
+    const cafe = buildRoom({ minX: -30, maxX: -11, minZ: 11, maxZ: 28, height: 4.0, wallMat: mats.brick, floorMat: mats.wood, doorSide: 'N', doorPos: -20, doorWidth: 1.5, doorType: 'swing', winSide: 'E', label: 'Café Veyra' });
+    addBox(6.0, 0.65, 0.22, -20, 3.85, 10.8, new THREE.MeshBasicMaterial({ color: 0xff5ea8 }));
+    [[-26, 17], [-26, 23], [-16, 23]].forEach(([tx, tz], i) => {
+      addBox(1.4, 0.08, 1.4, tx, 0.92, tz, mats.wood); addCollider(tx - 0.7, tz - 0.7, tx + 0.7, tz + 0.7);
+      createChair(tx - 1.05, 0.16, tz, Math.PI / 2, 'Café Chair', 0x8c3b2b);
+      if (i === 0) createChair(tx + 1.05, 0.16, tz, -Math.PI / 2, 'Café Chair', 0x8c3b2b);
+    });
+    addBox(5.5, 1.05, 1.1, -16.5, 0.68, 15.5, mats.concrete); addCollider(-19.2, 15.0, -13.8, 16.0);
+    createScreen(-29.7, 2.5, 20, Math.PI / 2, 1.8, 1.0, 'Café TV', 0xe67700);
+    createLightSwitch(-18.2, 1.5, 11.4, cafe.light, 'Café Lights');
+
+    // Clinic, Apartments + Garage, Apex Mall, Fuel Shop, Coastal Villa
+    const clinic = buildRoom({ minX: -49, maxX: -33, minZ: 11, maxZ: 28, height: 4.0, doorSide: 'N', doorPos: -41, doorWidth: 1.8, winSide: 'W', label: 'Veyra Clinic' });
+    createChair(-45, 0.16, 16, 0, 'Waiting Chair', 0x3b82f6);
+    addBox(1.4, 0.55, 2.4, -45, 0.44, 24, new THREE.MeshStandardMaterial({ color: 0xf1f5f9 })); addCollider(-45.7, 22.8, -44.3, 25.2);
+    createLightSwitch(-39.2, 1.5, 11.4, clinic.light, 'Clinic Lights');
+
+    buildRoom({ minX: -48, maxX: -14, minZ: 33, maxZ: 49, height: 4.2, wallMat: mats.brick, floorMat: mats.wood, doorSide: 'S', doorPos: -22, doorWidth: 1.4, doorType: 'swing', winSide: 'N', label: 'Bayfront Apt' });
+    addBox(2.8, 0.45, 1.1, -26, 0.38, 37, new THREE.MeshStandardMaterial({ color: 0x3e4c5e }));
+    createChair(-22.5, 0.16, 37.5, -0.4, 'Armchair', 0x4b5c73);
+    createScreen(-26, 2.0, 42.5, Math.PI, 1.9, 1.05, 'Apt Smart TV', 0x5f3dc4);
+    const garageDoor = addBox(4.8, 2.8, 0.16, -41, 1.56, 49.05, mats.metal);
+    let garageOpen = false, garageProg = 0;
+    animatables.push({
+      update: (dt) => {
+        garageProg += ((garageOpen ? 1 : 0) - garageProg) * Math.min(1, dt * 4.5);
+        garageDoor.position.y = 1.56 + garageProg * 2.55;
+        garageDoor.scale.y = Math.max(0.08, 1 - garageProg * 0.9);
+      }
+    });
+    interactables.push({
+      pos: new THREE.Vector3(-41, 1.4, 49.8), radius: 3.1,
+      getPrompt: () => `${garageOpen ? 'Close' : 'Open'} Garage`,
+      interact: () => { garageOpen = !garageOpen; playTone(180, 0.22, 'sawtooth', 0.04); showToast(garageOpen ? 'Garage Door Opening' : 'Garage Door Closing'); }
+    });
+
+    buildRoom({ minX: 11, maxX: 31, minZ: 11, maxZ: 31, height: 4.8, doorSide: 'N', doorPos: 21, doorWidth: 2.2, winSide: 'W', label: 'Apex Mall' });
+    addBox(7.2, 0.65, 0.25, 21, 4.4, 10.8, new THREE.MeshBasicMaterial({ color: 0xc084fc }));
+    addBox(3.5, 1.8, 0.4, 15, 1.06, 20, new THREE.MeshStandardMaterial({ color: 0xc2255c })); addCollider(13.2, 19.8, 16.8, 20.2);
+    addBox(1.2, 1.0, 7.0, 27, 0.66, 21, mats.darkMetal); addCollider(26.4, 17.5, 27.6, 24.5);
+    createScreen(27, 1.45, 20, -Math.PI / 2, 0.9, 0.55, 'Mall 4K OLED', 0xae3ec9);
+
+    buildRoom({ minX: 35, maxX: 49, minZ: 20, maxZ: 30, height: 3.8, wallMat: mats.brick, doorSide: 'N', doorPos: 42, doorWidth: 1.6, label: 'Fuel Shop' });
+    addBox(14, 0.45, 7.5, 42, 4.4, 14, new THREE.MeshStandardMaterial({ color: 0xf08c00 }));
+    addBox(0.45, 4.2, 0.45, 37, 2.2, 14, mats.metal); addBox(0.45, 4.2, 0.45, 47, 2.2, 14, mats.metal);
+
+    buildRoom({ minX: 14, maxX: 46, minZ: 35, maxZ: 49, height: 4.4, floorMat: mats.wood, doorSide: 'S', doorPos: 30, doorWidth: 2.2, winSide: 'S', label: 'Veyra Villa' });
+    createChair(26, 0.16, 41, -Math.PI / 2, 'Villa Lounger', 0xf8f9fa);
+
+    // Park, Lake & Secret Hatch
+    addBox(42, 0.18, 42, -30, 0.09, -30, mats.grass, scene, false);
+    const lake = new THREE.Mesh(new THREE.CircleGeometry(7.5, 24), oceanMat);
+    lake.rotation.x = -Math.PI / 2; lake.position.set(-34, 0.22, -26); scene.add(lake);
+    createChair(-24, 0.18, -22, -Math.PI / 2, 'Park Bench', 0x6b4c35);
+
+    addBox(3.2, 2.4, 3.2, -47, 1.36, -47, mats.darkConcrete); addCollider(-48.6, -48.6, -45.4, -45.4);
+    const hatchLid = addBox(1.5, 0.14, 1.5, -44.2, 0.25, -47.2, mats.brass);
+    let hatchOpen = false;
+    interactables.push({
+      pos: new THREE.Vector3(-44.2, 0.5, -47.2), radius: 2.6,
+      getPrompt: () => hatchOpen ? 'Stash Opened' : 'Open Secret Hatch',
+      interact: () => {
+        if (!hatchOpen) {
+          hatchOpen = true; hatchLid.rotation.z = -1.2; hatchLid.position.y += 0.55;
+          state.credits += 500; playTone(940, 0.2); showToast('Syndicate Stash Found! +500 VC');
+        } else {
+          showToast('Secret Syndicate Stash already looted');
+        }
+      }
+    });
+
+    // Skyline Backdrop
+    [[-88, -30, 22, 44, 24], [-88, 25, 22, 26, 24], [88, -35, 24, 54, 28], [88, 25, 22, 22, 26], [-35, -88, 26, 38, 20], [18, -88, 28, 62, 22], [68, -88, 20, 30, 20]].forEach(([x, z, w, h, d]) => {
+      addBox(w, h, d, x, h / 2, z, mats.facade); addCollider(x - w / 2, z - d / 2, x + w / 2, z + d / 2, 0, h);
+    });
+
+    // Streetlamps & Traffic Lights
+    function createStreetLamp(x, z, rotY = 0) {
+      const g = new THREE.Group(); g.position.set(x, 0.16, z); g.rotation.y = rotY; scene.add(g);
+      addBox(0.16, 5.2, 0.16, 0, 2.6, 0, mats.darkMetal, g);
+      addBox(1.2, 0.12, 0.14, 0.55, 5.15, 0, mats.darkMetal, g);
+      const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffe8b3 });
+      addBox(0.45, 0.08, 0.25, 0.95, 5.05, 0, bulbMat, g, false);
+      streetLampBulbs.push(bulbMat);
+      const pl = new THREE.PointLight(0xffd2a0, 0, 18);
+      pl.position.set(x + Math.cos(rotY) * 0.95, 4.9, z - Math.sin(rotY) * 0.95);
+      scene.add(pl); streetLights.push(pl);
+    }
+    [[-7.5, -28, 0], [7.5, -28, Math.PI], [-7.5, 28, 0], [7.5, 28, Math.PI], [-28, -7.5, -Math.PI / 2], [28, -7.5, -Math.PI / 2]]
+      .forEach(l => createStreetLamp(...l));
+
+    const trafficState = { nsGreen: true, yellow: false, timer: 0 };
+    const tlMaterials = { nsRed: [], nsAmber: [], nsGreen: [], ewRed: [], ewAmber: [], ewGreen: [] };
+    function createTrafficLight(x, z, axis) {
+      const g = new THREE.Group(); g.position.set(x, 0.16, z); scene.add(g);
+      addBox(0.22, 4.2, 0.22, 0, 2.1, 0, mats.darkMetal, g);
+      addBox(0.38, 1.1, 0.38, 0, 3.8, 0, mats.darkMetal, g);
+      const r = new THREE.MeshBasicMaterial({ color: 0x330000 }),
+            a = new THREE.MeshBasicMaterial({ color: 0x332200 }),
+            gr = new THREE.MeshBasicMaterial({ color: 0x00ff66 });
+      [0.32, 0, -0.32].forEach((oy, i) => {
+        const lens = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), i === 0 ? r : i === 1 ? a : gr);
+        lens.position.set(axis === 'ew' ? 0.2 : 0, 3.8 + oy, axis === 'ns' ? 0.2 : 0); g.add(lens);
+      });
+      if (axis === 'ns') { tlMaterials.nsRed.push(r); tlMaterials.nsAmber.push(a); tlMaterials.nsGreen.push(gr); }
+      else { tlMaterials.ewRed.push(r); tlMaterials.ewAmber.push(a); tlMaterials.ewGreen.push(gr); }
+    }
+    createTrafficLight(-7.2, -7.2, 'ns'); createTrafficLight(7.2, 7.2, 'ns');
+    createTrafficLight(-7.2, 7.2, 'ew'); createTrafficLight(7.2, -7.2, 'ew');
+
+    // =========================================================================
+    // 7. VEHICLES & PEDESTRIAN NPCs
+    // =========================================================================
+    const vehicles = [];
+    function createVehicle(type, path, startIdx, speed) {
+      const g = new THREE.Group();
+      const specs = {
+        car: { w: 1.9, h: 1.35, l: 4.1, col: [0x1c7ed6, 0xe03131, 0xced4da, 0x212529][Math.floor(Math.random() * 4)] },
+        suv: { w: 2.05, h: 1.75, l: 4.5, col: 0x2b3d47 },
+        taxi: { w: 1.9, h: 1.4, l: 4.2, col: 0xfcc419 },
+        bus: { w: 2.35, h: 2.9, l: 8.2, col: 0x1864ab },
+        police: { w: 1.95, h: 1.45, l: 4.3, col: 0x151921 }
+      }[type];
+      const bodyMat = new THREE.MeshStandardMaterial({ color: specs.col, roughness: 0.16, metalness: 0.72, envMapIntensity: 1.6 });
+      addBox(specs.w, specs.h * 0.52, specs.l, 0, specs.h * 0.38, 0, bodyMat, g);
+      addBox(specs.w * 0.85, specs.h * 0.44, specs.l * (type === 'bus' ? 0.92 : 0.54), 0, specs.h * 0.78, 0, type === 'police' ? bodyMat : mats.glass, g);
+      [[-specs.w / 2, specs.l * 0.32], [specs.w / 2, specs.l * 0.32], [-specs.w / 2, -specs.l * 0.32], [specs.w / 2, -specs.l * 0.32]].forEach(([wx, wz]) => {
+        const w = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.24, 12), mats.darkMetal);
+        w.rotation.z = Math.PI / 2; w.position.set(wx, 0.36, wz); g.add(w);
+      });
+      const hl = new THREE.MeshBasicMaterial({ color: 0xfff3bf }), tl = new THREE.MeshBasicMaterial({ color: 0xff2b2b });
+      addBox(0.32, 0.16, 0.08, -specs.w * 0.32, specs.h * 0.4, specs.l / 2 + 0.02, hl, g, false);
+      addBox(0.32, 0.16, 0.08, specs.w * 0.32, specs.h * 0.4, specs.l / 2 + 0.02, hl, g, false);
+      addBox(0.32, 0.16, 0.08, -specs.w * 0.32, specs.h * 0.4, -specs.l / 2 - 0.02, tl, g, false);
+      addBox(0.32, 0.16, 0.08, specs.w * 0.32, specs.h * 0.4, -specs.l / 2 - 0.02, tl, g, false);
+      let sirenL = null, sirenR = null;
+      if (type === 'police') {
+        sirenL = addBox(0.45, 0.14, 0.25, -0.25, specs.h + 0.08, 0, new THREE.MeshBasicMaterial({ color: 0x339af0 }), g, false);
+        sirenR = addBox(0.45, 0.14, 0.25, 0.25, specs.h + 0.08, 0, new THREE.MeshBasicMaterial({ color: 0xff3b3b }), g, false);
+      }
+      g.position.set(path[startIdx][0], 0.02, path[startIdx][1]); scene.add(g);
+      vehicles.push({ group: g, path, idx: (startIdx + 1) % path.length, speed, sirenL, sirenR });
+    }
+    const outerLoop = [[-57, -57], [57, -57], [57, 57], [-57, 57]],
+          innerA = [[-3, -57], [57, -57], [57, -3], [-3, -3]],
+          innerB = [[3, 3], [57, 3], [57, 57], [3, 57]];
+    createVehicle('car', outerLoop, 0, 11.5);
+    createVehicle('taxi', outerLoop, 1, 12.2);
+    createVehicle('bus', outerLoop, 2, 8.8);
+    createVehicle('police', outerLoop, 3, 13.5);
+    createVehicle('suv', innerA, 0, 11.0);
+    createVehicle('car', innerB, 2, 11.8);
+
+    const npcs = [];
+    function createHuman(shirt, pants) {
+      const g = new THREE.Group();
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.34, 0.32), new THREE.MeshStandardMaterial({ color: 0xd9a98b, roughness: 0.68 }));
+      head.position.y = 1.62; head.castShadow = true; g.add(head);
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.62, 0.24), new THREE.MeshStandardMaterial({ color: shirt }));
+      torso.position.y = 1.14; torso.castShadow = true; g.add(torso);
+      const armL = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.56, 0.16), new THREE.MeshStandardMaterial({ color: shirt }));
+      armL.position.set(-0.32, 1.14, 0); g.add(armL);
+      const armR = armL.clone(); armR.position.x = 0.32; g.add(armR);
+      const legL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.72, 0.18), new THREE.MeshStandardMaterial({ color: pants }));
+      legL.position.set(-0.12, 0.44, 0); legL.castShadow = true; g.add(legL);
+      const legR = legL.clone(); legR.position.x = 0.12; g.add(legR);
+      return { g, armL, armR, legL, legR };
+    }
+    [
+      [[-9, -9], [-9, -51], [-51, -51], [-51, -9], 2.1, 0xe03131, 0x212529],
+      [[9, -9], [51, -9], [51, -51], [9, -51], 2.3, 0x1971c2, 0x343a40],
+      [[-45, 67], [48, 67], null, null, 2.0, 0xff5ea8, 0x212529],
+      [[35, 67], [-35, 67], null, null, 2.1, 0x0ca678, 0x343a40]
+    ].forEach(d => {
+      const wp = d.slice(0, 4).filter(Boolean);
+      const h = createHuman(d[5], d[6]); h.g.position.set(wp[0][0], 0.16, wp[0][1]); scene.add(h.g);
+      npcs.push({ ...h, waypoints: wp, idx: 1, speed: d[4], phase: Math.random() * 6 });
+    });
+
+    // =========================================================================
+    // 8. PLAYER, INPUT BRIDGE, TIME OF DAY & PHYSICS LOOP
+    // =========================================================================
+    const playerData = createHuman(0xff5ea8, 0x1b2330);
+    const playerMesh = playerData.g;
+    const player = new THREE.Object3D();
+    player.position.set(0, 0.16, 10);
+    player.add(playerMesh);
+    scene.add(player);
+
+    let velY = 0, onGround = true, walkPhase = 0;
+    let camYaw = 0, camPitch = 0.24;
+    const joy = { x: 0, y: 0 };
+
+    function standUp() {
+      if (!state.isSeated) return;
+      state.isSeated = false;
+      if (state.seatReturnPos) player.position.copy(state.seatReturnPos);
+      playerData.legL.rotation.x = 0;
+      playerData.legR.rotation.x = 0;
+    }
+
+    function getNearestInteractable() {
+      const pHead = new THREE.Vector3(player.position.x, player.position.y + 1.2, player.position.z);
+      let best = null, bestD = Infinity;
+      for (const item of interactables) {
+        const d = pHead.distanceTo(item.pos);
+        if (d <= item.radius && d < bestD) { best = item; bestD = d; }
+      }
+      return best;
+    }
+
+    function applyTimeOfDay() {
+      const presets = [
+        { top: 0x3b7dd8, horiz: 0xc2e2ff, fog: 0xa9cce8, sunCol: 0xffe4bd, sunInt: 1.18, hemi: 0.68, pos: [95, 55, 70], night: false },
+        { top: 0x1f6fd9, horiz: 0x99d0ff, fog: 0x9ec8e8, sunCol: 0xfff8eb, sunInt: 1.5,  hemi: 0.76, pos: [65, 130, 55], night: false },
+        { top: 0x253a7a, horiz: 0xff8b60, fog: 0xd98772, sunCol: 0xffa45b, sunInt: 1.35, hemi: 0.62, pos: [-110, 28, 50], night: true },
+        { top: 0x050914, horiz: 0x162642, fog: 0x0a1324, sunCol: 0x7096c8, sunInt: 0.34, hemi: 0.32, pos: [-60, 95, -50], night: true }
+      ];
+      const p = presets[state.timePreset] || presets[2];
+      const rainDark = state.isRaining;
+      skyGradMat.uniforms.uTop.value.setHex(rainDark ? (p.night ? 0x080f1d : 0x34465c) : p.top);
+      skyGradMat.uniforms.uHoriz.value.setHex(rainDark ? (p.night ? 0x121d30 : 0x526478) : p.horiz);
+      skyGradMat.uniforms.uSunCol.value.setHex(p.sunCol);
+      const sDir = new THREE.Vector3(...p.pos).normalize();
+      skyGradMat.uniforms.uSunDir.value.copy(sDir);
+
+      waterUniforms.uSunDir.value.copy(sDir);
+      waterUniforms.uSunColor.value.setHex(p.sunCol);
+      waterUniforms.uSkyColor.value.setHex(rainDark ? (p.night ? 0x121d30 : 0x526478) : p.horiz);
+
+      const fogCol = rainDark ? (p.night ? 0x09101c : 0x5d6e82) : p.fog;
+      scene.fog.color.setHex(fogCol);
+      scene.fog.density = rainDark ? 0.0052 : (state.timePreset === 3 ? 0.0042 : 0.0028);
+      scene.background.setHex(fogCol);
+
+      sunLight.color.setHex(p.sunCol);
+      sunLight.intensity = rainDark ? p.sunInt * 0.55 : p.sunInt;
+      sunLight.position.set(...p.pos);
+      hemiLight.intensity = rainDark ? p.hemi * 0.72 : p.hemi;
+      hemiLight.color.setHex(p.night ? 0x6c88b8 : 0xffe4c4);
+
+      const lampsOn = p.night || rainDark;
+      streetLights.forEach(l => { l.intensity = lampsOn ? 1.55 : 0; });
+      streetLampBulbs.forEach(m => { m.color.setHex(lampsOn ? 0xffe8b3 : 0x5a6270); });
+      interiorLights.forEach(l => { l.intensity = p.night ? 1.5 : 1.05; });
+
+      rebuildEnvReflections();
+    }
+
+    function detectZone(x, y, z) {
+      if (y > 40) return 'Horizon Tower — Floor 14 Skydeck';
+      if (x >= 11 && x <= 29 && z >= -31 && z <= -11) return 'Nova Mart';
+      if (x >= 33 && x <= 49 && z >= -49 && z <= -11) return 'Horizon Tower Lobby';
+      if (x >= -30 && x <= -11 && z >= 11 && z <= 28) return 'Café Veyra';
+      if (x >= -49 && x <= -33 && z >= 11 && z <= 28) return 'Veyra Medical Clinic';
+      if (x >= -48 && x <= -14 && z >= 33 && z <= 49) return 'Bayfront Apartments';
+      if (x >= 11 && x <= 31 && z >= 11 && z <= 31) return 'Apex Mall';
+      if (x >= 35 && x <= 49 && z >= 20 && z <= 30) return 'Fuel Station';
+      if (x >= 14 && x <= 46 && z >= 35 && z <= 49) return 'Veyra Coastal Villa';
+      if (x >= -51 && x <= -9 && z >= -51 && z <= -9) return 'Central Park & Lake';
+      if (x >= 8.5 && x <= 15.5 && z >= 72) return 'Veyra Harbour Pier';
+      if (z >= 64) return 'Harbour Boardwalk';
+      return 'Horizon Ave — Downtown';
+    }
+
+    function getGroundElevation(x, y, z) {
+      if (y > 46 && x >= 32.5 && x <= 49.5 && z >= -49.5 && z <= -10.5) return 52.22;
+      if (x >= 8.7 && x <= 15.3 && z >= 71.5 && z <= 100.2) return 0.78;
+      if (x >= -51 && x <= -9 && z >= -51 && z <= -9) return 0.18;
+      return 0.16;
+    }
+
+    function resolveCollisions(pos, radius) {
+      const pMinY = pos.y;
+      const pMaxY = pos.y + 1.75;
+      for (let i = 0; i < colliders.length; i++) {
+        const c = colliders[i];
+        if (c.activeFn && !c.activeFn()) continue;
+        if (pMaxY <= c.minY || pMinY >= c.maxY) continue;
+        const nearX = Math.max(c.minX, Math.min(pos.x, c.maxX));
+        const nearZ = Math.max(c.minZ, Math.min(pos.z, c.maxZ));
+        const dx = pos.x - nearX;
+        const dz = pos.z - nearZ;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < radius * radius) {
+          if (distSq > 0.00001) {
+            const dist = Math.sqrt(distSq);
+            const push = radius - dist;
+            pos.x += (dx / dist) * push;
+            pos.z += (dz / dist) * push;
+          } else {
+            const dLeft = Math.abs(pos.x - c.minX), dRight = Math.abs(c.maxX - pos.x);
+            const dTop = Math.abs(pos.z - c.minZ), dBot = Math.abs(c.maxZ - pos.z);
+            const m = Math.min(dLeft, dRight, dTop, dBot);
+            if (m === dLeft) pos.x = c.minX - radius;
+            else if (m === dRight) pos.x = c.maxX + radius;
+            else if (m === dTop) pos.z = c.minZ - radius;
+            else pos.z = c.maxZ + radius;
+          }
+        }
+      }
+      pos.x = Math.max(-110, Math.min(110, pos.x));
+      pos.z = Math.max(-92, Math.min(100, pos.z));
+    }
+
+    function updateTrafficLights(dt) {
+      trafficState.timer += dt;
+      if (trafficState.timer > 8.0) {
+        trafficState.timer = 0;
+        if (!trafficState.yellow) {
+          trafficState.yellow = true;
+        } else {
+          trafficState.yellow = false;
+          trafficState.nsGreen = !trafficState.nsGreen;
+        }
+      }
+      const nsG = trafficState.nsGreen && !trafficState.yellow;
+      const nsY = trafficState.nsGreen && trafficState.yellow;
+      const nsR = !trafficState.nsGreen;
+      const ewG = !trafficState.nsGreen && !trafficState.yellow;
+      const ewY = !trafficState.nsGreen && trafficState.yellow;
+      const ewR = trafficState.nsGreen;
+      tlMaterials.nsGreen.forEach(m => m.color.setHex(nsG ? 0x00ff66 : 0x002612));
+      tlMaterials.nsAmber.forEach(m => m.color.setHex(nsY ? 0xffbb00 : 0x332200));
+      tlMaterials.nsRed.forEach(m => m.color.setHex(nsR ? 0xff2b2b : 0x330000));
+      tlMaterials.ewGreen.forEach(m => m.color.setHex(ewG ? 0x00ff66 : 0x002612));
+      tlMaterials.ewAmber.forEach(m => m.color.setHex(ewY ? 0xffbb00 : 0x332200));
+      tlMaterials.ewRed.forEach(m => m.color.setHex(ewR ? 0xff2b2b : 0x330000));
+    }
+
+    function updateVehicles(dt, elapsed) {
+      for (const v of vehicles) {
+        const target = v.path[v.idx];
+        const dx = target[0] - v.group.position.x;
+        const dz = target[1] - v.group.position.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist < 1.5) {
+          v.idx = (v.idx + 1) % v.path.length;
+        } else {
+          const dirX = dx / dist, dirZ = dz / dist;
+          // Slow down gently if player is right ahead
+          const toPlayerX = player.position.x - v.group.position.x;
+          const toPlayerZ = player.position.z - v.group.position.z;
+          const pDist = Math.hypot(toPlayerX, toPlayerZ);
+          const blockedByPlayer = pDist < 6.0 && (toPlayerX * dirX + toPlayerZ * dirZ) > 0.5 && player.position.y < 3.0;
+
+          // Respect main intersection red light at (0,0)
+          let redWait = false;
+          if (Math.abs(dirZ) > 0.5 && !trafficState.nsGreen && Math.abs(v.group.position.x) < 7 && Math.abs(v.group.position.z) > 7 && Math.abs(v.group.position.z) < 12) {
+            redWait = true;
+          }
+          if (Math.abs(dirX) > 0.5 && trafficState.nsGreen && Math.abs(v.group.position.z) < 7 && Math.abs(v.group.position.x) > 7 && Math.abs(v.group.position.x) < 12) {
+            redWait = true;
+          }
+
+          if (!blockedByPlayer && !redWait) {
+            v.group.position.x += dirX * v.speed * dt;
+            v.group.position.z += dirZ * v.speed * dt;
+          }
+          const targetYaw = Math.atan2(dirX, dirZ);
+          let diff = targetYaw - v.group.rotation.y;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          v.group.rotation.y += diff * Math.min(1, dt * 8);
+        }
+        if (v.sirenL && v.sirenR) {
+          const flash = Math.floor(elapsed * 6) % 2 === 0;
+          v.sirenL.material.color.setHex(flash ? 0x339af0 : 0x111a2e);
+          v.sirenR.material.color.setHex(flash ? 0x2e1111 : 0xff3b3b);
+        }
+      }
+    }
+
+    function updateNpcs(dt) {
+      for (const n of npcs) {
+        const target = n.waypoints[n.idx];
+        const dx = target[0] - n.g.position.x;
+        const dz = target[1] - n.g.position.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist < 0.8) {
+          n.idx = (n.idx + 1) % n.waypoints.length;
+        } else {
+          const dirX = dx / dist, dirZ = dz / dist;
+          n.g.position.x += dirX * n.speed * dt;
+          n.g.position.z += dirZ * n.speed * dt;
+          n.g.rotation.y = Math.atan2(dirX, dirZ);
+          n.phase += dt * n.speed * 3.2;
+          const swing = Math.sin(n.phase) * 0.55;
+          n.legL.rotation.x = swing; n.legR.rotation.x = -swing;
+          n.armL.rotation.x = -swing * 0.7; n.armR.rotation.x = swing * 0.7;
+        }
+      }
+    }
+
+    // Native Kotlin Bridge API
+    window.NovaGame = {
+      setJoy: (x, y) => {
+        joy.x = Math.max(-1, Math.min(1, Number(x) || 0));
+        joy.y = Math.max(-1, Math.min(1, Number(y) || 0));
+      },
+      addLook: (dx, dy) => {
+        camYaw -= (Number(dx) || 0) * 0.0052;
+        camPitch = Math.max(-0.42, Math.min(1.12, camPitch + (Number(dy) || 0) * 0.0046));
+      },
+      jump: () => {
+        if (state.isSeated) {
+          standUp();
+          playTone(300, 0.06);
+        } else if (onGround) {
+          velY = 6.4;
+          onGround = false;
+          playTone(280, 0.06);
+        }
+      },
+      interact: () => {
+        const nearest = getNearestInteractable();
+        if (nearest) nearest.interact();
+      },
+      setTime: (presetIdx) => {
+        state.timePreset = ((Number(presetIdx) || 0) % 4 + 4) % 4;
+        applyTimeOfDay();
+        playTone(460, 0.06);
+      },
+      setRain: (enabled) => {
+        state.isRaining = !!enabled;
+        rainPoints.visible = state.isRaining;
+        mats.asphalt.roughness = state.isRaining ? 0.14 : 0.78;
+        mats.sidewalk.roughness = state.isRaining ? 0.22 : 0.85;
+        applyTimeOfDay();
+        playTone(state.isRaining ? 340 : 500, 0.07);
+      },
+      setCamMode: (modeIdx) => {
+        state.camDistMode = ((Number(modeIdx) || 0) % 3 + 3) % 3;
+        playTone(540, 0.05);
+      },
+      setAudio: (enabled) => {
+        state.audioEnabled = !!enabled;
+      },
+      setHighDpr: (enabled) => {
+        highDpr = !!enabled;
+        applyRendererSize();
+      },
+      fastTravel: (x, y, z, yaw, label) => {
+        standUp();
+        player.position.set(Number(x) || 0, Number(y) || 0.16, Number(z) || 10);
+        velY = 0; onGround = true;
+        camYaw = Number(yaw) || 0;
+        playerMesh.rotation.y = camYaw + Math.PI;
+        playTone(640, 0.14, 'triangle', 0.06);
+        if (label) showToast(`Arrived at ${label}`);
+      },
+      resetPlayer: () => {
+        standUp();
+        player.position.set(0, 0.16, 10);
+        velY = 0; onGround = true;
+        camYaw = 0; camPitch = 0.24;
+        playTone(480, 0.1);
+        showToast('Respawned on Horizon Ave');
+      },
+      unlockAudio: () => {
+        playTone(520, 0.09);
+      }
+    };
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      applyRendererSize();
+    });
+
+    // Apply initial Golden Hour Sunset environment reflections
+    applyTimeOfDay();
+
+    const clock = new THREE.Clock();
+    const raycaster = new THREE.Raycaster();
+    const camDistances = [4.6, 7.0, 10.6];
+    let lastTelemetrySent = 0;
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.05);
+      const elapsed = clock.elapsedTime;
+
+      waterUniforms.uTime.value = elapsed;
+
+      // Player Movement & Sprint
+      const joyMag = Math.hypot(joy.x, joy.y);
+      let isSprinting = false;
+
+      if (joyMag > 0.08) {
+        if (state.isSeated) standUp();
+        isSprinting = joyMag > 0.78 && state.stamina > 4;
+        const speed = isSprinting ? 8.6 : 4.6 * Math.min(1, joyMag / 0.75);
+        if (isSprinting) {
+          state.stamina = Math.max(0, state.stamina - dt * 16);
+        } else {
+          state.stamina = Math.min(100, state.stamina + dt * 11);
+        }
+
+        const forwardX = -Math.sin(camYaw);
+        const forwardZ = -Math.cos(camYaw);
+        const rightX = Math.cos(camYaw);
+        const rightZ = -Math.sin(camYaw);
+
+        const moveX = rightX * joy.x + forwardX * (-joy.y);
+        const moveZ = rightZ * joy.x + forwardZ * (-joy.y);
+        const mLen = Math.hypot(moveX, moveZ) || 1;
+        const nx = moveX / mLen, nz = moveZ / mLen;
+
+        player.position.x += nx * speed * dt;
+        player.position.z += nz * speed * dt;
+
+        const targetFacing = Math.atan2(nx, nz);
+        let diff = targetFacing - playerMesh.rotation.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        playerMesh.rotation.y += diff * Math.min(1, dt * 12);
+
+        walkPhase += dt * speed * 2.15;
+        const amp = isSprinting ? 0.75 : 0.48;
+        playerData.legL.rotation.x = Math.sin(walkPhase) * amp;
+        playerData.legR.rotation.x = -Math.sin(walkPhase) * amp;
+        playerData.armL.rotation.x = -Math.sin(walkPhase) * amp * 0.75;
+        playerData.armR.rotation.x = Math.sin(walkPhase) * amp * 0.75;
+      } else {
+        state.stamina = Math.min(100, state.stamina + dt * 15);
+        if (state.isSeated) {
+          playerData.legL.rotation.x = -1.3;
+          playerData.legR.rotation.x = -1.3;
+          playerData.armL.rotation.x = -0.35;
+          playerData.armR.rotation.x = -0.35;
+        } else {
+          playerData.legL.rotation.x *= 0.82;
+          playerData.legR.rotation.x *= 0.82;
+          playerData.armL.rotation.x *= 0.82;
+          playerData.armR.rotation.x *= 0.82;
+        }
+      }
+
+      // Gravity & Ground Elevation
+      if (!state.isSeated) {
+        const floorY = getGroundElevation(player.position.x, player.position.y, player.position.z);
+        velY -= 16.5 * dt;
+        player.position.y += velY * dt;
+        if (player.position.y <= floorY) {
+          player.position.y = floorY;
+          velY = 0;
+          onGround = true;
+        }
+        resolveCollisions(player.position, 0.42);
+      }
+
+      // World Animations, Traffic & NPCs
+      for (let i = 0; i < animatables.length; i++) animatables[i].update(dt, elapsed);
+      updateTrafficLights(dt);
+      updateVehicles(dt, elapsed);
+      updateNpcs(dt);
+
+      // Rain Fall Update centered on Player
+      if (state.isRaining) {
+        rainPoints.position.set(player.position.x, player.position.y, player.position.z);
+        const arr = rainGeo.attributes.position.array;
+        for (let i = 0; i < rainCount; i++) {
+          arr[i * 3 + 1] -= 28 * dt;
+          if (arr[i * 3 + 1] < -2) arr[i * 3 + 1] = 36;
+        }
+        rainGeo.attributes.position.needsUpdate = true;
+      }
+
+      // 3rd-Person Orbit Camera with Wall Occlusion Raycast
+      const targetPos = new THREE.Vector3(player.position.x, player.position.y + 1.55, player.position.z);
+      const desiredDist = camDistances[state.camDistMode] || 4.6;
+      const offsetDir = new THREE.Vector3(
+        Math.sin(camYaw) * Math.cos(camPitch),
+        Math.sin(camPitch),
+        Math.cos(camYaw) * Math.cos(camPitch)
+      ).normalize();
+
+      let actualDist = desiredDist;
+      raycaster.set(targetPos, offsetDir);
+      raycaster.far = desiredDist;
+      const hits = raycaster.intersectObjects(cameraOccluders, false);
+      if (hits.length > 0) {
+        actualDist = Math.max(1.15, hits[0].distance - 0.35);
+      }
+
+      camera.position.copy(targetPos).addScaledVector(offsetDir, actualDist);
+      if (camera.position.y < player.position.y + 0.35) camera.position.y = player.position.y + 0.35;
+      camera.lookAt(targetPos);
+
+      // Sky dome tracks player so horizon never clips
+      visibleSkyDome.position.set(player.position.x, 0, player.position.z);
+
+      renderer.render(scene, camera);
+
+      // Emit throttled telemetry (~12Hz) to Native Jetpack Compose HUD
+      if (elapsed - lastTelemetrySent >= 0.08) {
+        lastTelemetrySent = elapsed;
+        state.zoneLabel = detectZone(player.position.x, player.position.y, player.position.z);
+        const nearest = getNearestInteractable();
+        notifyAndroid('onTelemetry', JSON.stringify({
+          x: Math.round(player.position.x * 10) / 10,
+          y: Math.round(player.position.y * 10) / 10,
+          z: Math.round(player.position.z * 10) / 10,
+          yaw: Math.round(camYaw * 100) / 100,
+          credits: state.credits,
+          stamina: Math.round(state.stamina),
+          zone: state.zoneLabel,
+          prompt: nearest ? nearest.getPrompt() : '',
+          isSeated: state.isSeated,
+          isSprinting: isSprinting,
+          timePreset: state.timePreset,
+          isRaining: state.isRaining,
+          camMode: state.camDistMode
+        }));
+      }
+    }
+
+    animate();
+  }
+
+  loadScriptWithFallback(0);
+})();
+</script>
+</body>
+</html>

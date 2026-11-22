@@ -1,0 +1,6 @@
+{
+  "name": "Wild Horizon",
+  "description": "Explore Nova City in a mobile 3D open-world game with real-time Gerstner waves, dynamic weather and sunset lighting, enterable interiors, live traffic, and dual-zone touch controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
