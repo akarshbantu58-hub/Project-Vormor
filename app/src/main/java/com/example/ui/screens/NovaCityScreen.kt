@@ -105,6 +105,7 @@ fun NovaCityScreen(
             SplashOverlay(
                 engineStatus = uiState.engineStatus,
                 engineErrorMessage = uiState.engineErrorMessage,
+                settings = settings,
                 onLaunchClick = {
                     engineController.unlockAudio()
                     viewModel.launchCity()
@@ -112,6 +113,15 @@ fun NovaCityScreen(
                 onRetryClick = {
                     viewModel.onRetryEngine()
                     engineController.reloadEngine()
+                },
+                onSensitivityChange = { viewModel.setCameraSensitivity(it) },
+                onAudioToggle = {
+                    viewModel.setAudioEnabled(it)
+                    engineController.setAudio(it)
+                },
+                onHighResToggle = {
+                    viewModel.setHighResRender(it)
+                    engineController.setHighDpr(it)
                 }
             )
         }
