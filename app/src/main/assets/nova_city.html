@@ -35,7 +35,7 @@
 
   function loadScriptWithFallback(idx) {
     if (window.THREE) {
-      bootEngine();
+      loadGltfLoaderThenBoot();
       return;
     }
     if (idx >= CDN_SOURCES.length) {
@@ -46,11 +46,20 @@
     s.src = CDN_SOURCES[idx];
     s.async = true;
     s.onload = () => {
-      if (window.THREE) bootEngine();
+      if (window.THREE) loadGltfLoaderThenBoot();
       else loadScriptWithFallback(idx + 1);
     };
     s.onerror = () => loadScriptWithFallback(idx + 1);
     document.head.appendChild(s);
+  }
+
+  function loadGltfLoaderThenBoot() {
+    if (!window.THREE || THREE.GLTFLoader) { bootEngine(); return; }
+    const loaderScript = document.createElement('script');
+    loaderScript.src = 'https://cdn.jsdelivr.net/npm/three@0.146.0/examples/js/loaders/GLTFLoader.js';
+    loaderScript.onload = () => bootEngine();
+    loaderScript.onerror = () => bootEngine(); // Keep the procedural fallback if the loader CDN is unavailable.
+    document.head.appendChild(loaderScript);
   }
 
   function bootEngine() {
@@ -1078,6 +1087,56 @@
     player.position.set(0, 0.16, 10);
     player.add(playerMesh);
     scene.add(player);
+
+    // Load the supplied rigged R. Miller GLB. The procedural character remains as a
+    // safe fallback until the model file is uploaded to this exact assets path.
+    function loadRileyPlayerModel() {
+      if (!THREE.GLTFLoader) return;
+      const modelUrl = 'models/R_Miller_GTA6_Style_Character_v2.glb';
+      const loader = new THREE.GLTFLoader();
+      loader.load(modelUrl, (gltf) => {
+        const model = gltf.scene;
+        model.updateMatrixWorld(true);
+        const initialBounds = new THREE.Box3().setFromObject(model);
+        const modelHeight = Math.max(0.01, initialBounds.max.y - initialBounds.min.y);
+        model.scale.setScalar(1.82 / modelHeight);
+        model.updateMatrixWorld(true);
+        const bounds = new THREE.Box3().setFromObject(model);
+        model.position.x -= (bounds.min.x + bounds.max.x) * 0.5;
+        model.position.y -= bounds.min.y;
+        model.position.z -= (bounds.min.z + bounds.max.z) * 0.5;
+        model.traverse((node) => {
+          if (node.isMesh) {
+            node.castShadow = true;
+            node.receiveShadow = true;
+            if (node.material) {
+              const materials = Array.isArray(node.material) ? node.material : [node.material];
+              materials.forEach((material) => {
+                if (material.map) material.map.encoding = THREE.sRGBEncoding;
+                material.needsUpdate = true;
+              });
+            }
+          }
+        });
+        playerMesh.clear();
+        playerMesh.add(model);
+        const findBone = (...names) => {
+          for (const name of names) {
+            const found = model.getObjectByName(name);
+            if (found) return found;
+          }
+          return null;
+        };
+        playerData.legL = findBone('L_Thigh', 'LeftUpLeg') || playerData.legL;
+        playerData.legR = findBone('R_Thigh', 'RightUpLeg') || playerData.legR;
+        playerData.armL = findBone('L_UpperArm', 'LeftArm') || playerData.armL;
+        playerData.armR = findBone('R_UpperArm', 'RightArm') || playerData.armR;
+        showToast('R. Miller character loaded');
+      }, undefined, (error) => {
+        console.warn('R. Miller GLB could not be loaded; using procedural fallback.', error);
+      });
+    }
+    loadRileyPlayerModel();
 
     let velY = 0, onGround = true, walkPhase = 0;
     let camYaw = 0, camPitch = 0.16;
