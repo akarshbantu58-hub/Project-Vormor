@@ -1,4 +1,4 @@
-name: Android APK Build
+name: WILD HORIZON - Android Build
 
 on:
   push:
@@ -13,14 +13,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-apk-${{ github.ref }}
+  group: wild-horizon-android-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build debug APK
+    name: Build and package Android game
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Check out source
@@ -37,13 +37,53 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Report game asset footprint
+        shell: bash
+        run: |
+          echo "Current source asset sizes:"
+          if [ -d app/src/main/assets ]; then
+            du -sh app/src/main/assets
+            find app/src/main/assets -type f -printf '%s %p\n' | sort -nr | head -20
+          else
+            echo "No app/src/main/assets directory found."
+          fi
+
+      - name: Run unit tests
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
+
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
-      - name: Upload APK
+      - name: Report APK size and performance target
+        shell: bash
+        run: |
+          APK="$(find app/build/outputs/apk/debug -name '*.apk' -type f | head -1)"
+          test -n "$APK"
+          SIZE_BYTES="$(stat -c%s "$APK")"
+          SIZE_GB="$(awk -v n="$SIZE_BYTES" 'BEGIN { printf "%.3f", n/1000000000 }')"
+          echo "APK: $APK"
+          echo "APK size: $SIZE_GB GB ($SIZE_BYTES bytes)"
+          echo "Product targets: 4-8 GB installed game content; up to 4K assets on supported hardware; 60 FPS target on capable devices."
+          echo "These are product targets, not build guarantees. This workflow does not pad the APK or claim device performance."
+          if [ "$SIZE_BYTES" -gt 4000000000 ]; then
+            echo "::warning::APK exceeds 4 GB. Use asset packs / Play Asset Delivery or split downloadable content."
+          fi
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Project-Vormor-debug-apk
+          name: WILD-HORIZON-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload build reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WILD-HORIZON-build-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/
+          if-no-files-found: ignore
+          retention-days: 7
