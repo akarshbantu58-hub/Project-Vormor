@@ -451,6 +451,32 @@
     }
 
     let audioCtx = null;
+    let footstepNoiseBuffer = null;
+    function playFootstep() {
+      if (!state.audioEnabled) return;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        if (!footstepNoiseBuffer) {
+          footstepNoiseBuffer = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.11), audioCtx.sampleRate);
+          const data = footstepNoiseBuffer.getChannelData(0);
+          for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+        }
+        const source = audioCtx.createBufferSource();
+        const filter = audioCtx.createBiquadFilter();
+        const gain = audioCtx.createGain();
+        source.buffer = footstepNoiseBuffer;
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(520 + Math.random() * 180, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.045, audioCtx.currentTime + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.105);
+        source.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+        source.start(); source.stop(audioCtx.currentTime + 0.11);
+        playTone(78 + Math.random() * 18, 0.075, 'triangle', 0.035);
+      } catch (e) {}
+    }
+
     function playTone(freq, dur = 0.08, type = 'sine', vol = 0.06) {
       if (!state.audioEnabled) return;
       try {
@@ -1091,8 +1117,8 @@
     // Load Nathan GLB from the repository-root assets location.
     let playerAnimationMixer = null;
     function loadNathanPlayerModel() {
-      if (!THREE.GLTFLoader) return;
-      const modelUrl = 'nathan_optimized.glb';
+      if (!THREE.GLTFLoader) { showToast('Nathan loader unavailable — check internet connection'); return; }
+      const modelUrl = new URL('models/nathan.glb', document.baseURI).href;
       const loader = new THREE.GLTFLoader();
       loader.load(modelUrl, (gltf) => {
         const model = gltf.scene;
@@ -1136,13 +1162,16 @@
         playerData.armL = findBone('L_UpperArm', 'LeftArm') || playerData.armL;
         playerData.armR = findBone('R_UpperArm', 'RightArm') || playerData.armR;
         showToast('Nathan character loaded');
-      }, undefined, (error) => {
+      }, (progress) => {
+        if (progress && progress.total) console.log('Nathan model loading:', Math.round(progress.loaded / progress.total * 100) + '%');
+      }, (error) => {
         console.warn('Nathan GLB could not be loaded; using procedural fallback.', error);
+        showToast('Nathan model failed to load — placeholder retained');
       });
     }
     loadNathanPlayerModel();
 
-    let velY = 0, onGround = true, walkPhase = 0;
+    let velY = 0, onGround = true, walkPhase = 0, footstepClock = 0;
     let camYaw = 0, camPitch = 0.16;
     const joy = { x: 0, y: 0 };
 
@@ -1473,12 +1502,16 @@
         playerMesh.rotation.y += diff * Math.min(1, dt * 12);
 
         walkPhase += dt * speed * 2.15;
+        footstepClock += dt;
+        const footstepInterval = isSprinting ? 0.30 : 0.43;
+        if (footstepClock >= footstepInterval) { footstepClock = 0; playFootstep(); }
         const amp = isSprinting ? 0.75 : 0.48;
         playerData.legL.rotation.x = Math.sin(walkPhase) * amp;
         playerData.legR.rotation.x = -Math.sin(walkPhase) * amp;
         playerData.armL.rotation.x = -Math.sin(walkPhase) * amp * 0.75;
         playerData.armR.rotation.x = Math.sin(walkPhase) * amp * 0.75;
       } else {
+        footstepClock = 0;
         state.stamina = Math.min(100, state.stamina + dt * 15);
         if (state.isSeated) {
           playerData.legL.rotation.x = -1.3;
