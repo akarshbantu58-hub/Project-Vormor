@@ -1088,11 +1088,11 @@
     player.add(playerMesh);
     scene.add(player);
 
-    // Load the supplied rigged R. Miller GLB. The procedural character remains as a
-    // safe fallback until the model file is uploaded to this exact assets path.
-    function loadRileyPlayerModel() {
+    // Load Nathan GLB from the repository-root assets location.
+    let playerAnimationMixer = null;
+    function loadNathanPlayerModel() {
       if (!THREE.GLTFLoader) return;
-      const modelUrl = 'models/R_Miller_GTA6_Style_Character_v2.glb';
+      const modelUrl = 'nathan_optimized.glb';
       const loader = new THREE.GLTFLoader();
       loader.load(modelUrl, (gltf) => {
         const model = gltf.scene;
@@ -1120,6 +1120,10 @@
         });
         playerMesh.clear();
         playerMesh.add(model);
+        if (gltf.animations && gltf.animations.length) {
+          playerAnimationMixer = new THREE.AnimationMixer(model);
+          playerAnimationMixer.clipAction(gltf.animations[0]).play();
+        }
         const findBone = (...names) => {
           for (const name of names) {
             const found = model.getObjectByName(name);
@@ -1131,12 +1135,12 @@
         playerData.legR = findBone('R_Thigh', 'RightUpLeg') || playerData.legR;
         playerData.armL = findBone('L_UpperArm', 'LeftArm') || playerData.armL;
         playerData.armR = findBone('R_UpperArm', 'RightArm') || playerData.armR;
-        showToast('R. Miller character loaded');
+        showToast('Nathan character loaded');
       }, undefined, (error) => {
-        console.warn('R. Miller GLB could not be loaded; using procedural fallback.', error);
+        console.warn('Nathan GLB could not be loaded; using procedural fallback.', error);
       });
     }
-    loadRileyPlayerModel();
+    loadNathanPlayerModel();
 
     let velY = 0, onGround = true, walkPhase = 0;
     let camYaw = 0, camPitch = 0.16;
@@ -1432,6 +1436,7 @@
       const dt = Math.min(clock.getDelta(), 0.05);
       const elapsed = clock.elapsedTime;
 
+      if (playerAnimationMixer) playerAnimationMixer.update(dt);
       waterUniforms.uTime.value = elapsed;
 
       // Player Movement & Sprint
