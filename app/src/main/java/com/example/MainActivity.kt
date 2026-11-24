@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
             var aiming by remember { mutableStateOf(0) }
             var cameraHeight by remember { mutableStateOf(1) }
             var vibration by remember { mutableStateOf(false) }
-            var frameLimiter by remember { mutableStateOf(true) }
+            var frameLimiter by remember { mutableStateOf(true) }\n            var graphicsProfile by remember { mutableStateOf(1) }
 
             BackHandler(enabled = settingsVisible || !menuVisible) {
                 if (settingsVisible) settingsVisible = false else menuVisible = true
