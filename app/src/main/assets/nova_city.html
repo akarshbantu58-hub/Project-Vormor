@@ -714,6 +714,82 @@
       buildingRoofs.count = buildingPlaced;
       group.add(buildingBodies, buildingRoofs);
 
+      // Phase 6: repeated facade windows add architectural scale without one draw call per pane.
+      const windowMaterial = new THREE.MeshStandardMaterial({
+        color: 0x7896a7, roughness: 0.28, metalness: 0.22,
+        emissive: 0x172631, emissiveIntensity: 0.22
+      });
+      const windowGeo = new THREE.PlaneGeometry(3.1, 1.75);
+      const maxWindows = districtCount * 72;
+      const facadeWindows = new THREE.InstancedMesh(windowGeo, windowMaterial, maxWindows);
+      facadeWindows.name = 'ProceduralFacadeWindows';
+      facadeWindows.castShadow = false;
+      facadeWindows.receiveShadow = false;
+      const windowDummy = new THREE.Object3D();
+      let windowPlaced = 0;
+      for (let n = 0; n < buildingPlaced; n++) {
+        const slotIndex = (n * 7 + districtSeed) % 16;
+        const lx = districtSlots[slotIndex % 4];
+        const lz = districtSlots[Math.floor(slotIndex / 4)];
+        const width = biome.name === 'Metro' ? 28 + ((districtSeed + n * 13) % 17)
+          : biome.name === 'Industrial' ? 34 + ((districtSeed + n * 11) % 20)
+          : 19 + ((districtSeed + n * 9) % 13);
+        const depth = biome.name === 'Metro' ? 27 + ((districtSeed + n * 7) % 18)
+          : biome.name === 'Industrial' ? 38 + ((districtSeed + n * 5) % 18)
+          : 18 + ((districtSeed + n * 3) % 14);
+        let height;
+        if (biome.name === 'Metro') height = 22 + ((districtSeed + n * 29) % 76);
+        else if (biome.name === 'Industrial') height = 10 + ((districtSeed + n * 17) % 10);
+        else if (biome.name === 'Highlands') height = 4 + (n % 3);
+        else if (biome.name === 'Forest') height = 5 + (n % 5);
+        else if (biome.name === 'Coastal') height = 6 + ((districtSeed + n * 5) % 7);
+        else height = 5 + ((districtSeed + n * 7) % 6);
+        const baseY = worldTerrainHeight(cx + lx, cz + lz);
+        const floors = Math.min(8, Math.max(1, Math.floor(height / 3.4)));
+        const columns = Math.max(2, Math.min(5, Math.floor(width / 8)));
+        const yaw = ((districtSeed + n * 31) % 8) * Math.PI / 16;
+        for (let floor = 0; floor < floors; floor++) {
+          for (let col = 0; col < columns; col++) {
+            const across = (col - (columns - 1) / 2) * (width / (columns + 0.5));
+            const y = baseY + 2.2 + floor * 3.25;
+            const faces = [
+              { x: across, z: depth * 0.502, rot: 0 },
+              { x: across, z: -depth * 0.502, rot: Math.PI },
+              { x: width * 0.502, z: across * depth / width, rot: Math.PI / 2 },
+              { x: -width * 0.502, z: across * depth / width, rot: -Math.PI / 2 }
+            ];
+            for (const face of faces) {
+              if (windowPlaced >= maxWindows) break;
+              const rx = face.x * Math.cos(yaw) + face.z * Math.sin(yaw);
+              const rz = -face.x * Math.sin(yaw) + face.z * Math.cos(yaw);
+              windowDummy.position.set(lx + rx, y, lz + rz);
+              windowDummy.rotation.set(0, yaw + face.rot, 0);
+              windowDummy.updateMatrix();
+              facadeWindows.setMatrixAt(windowPlaced++, windowDummy.matrix);
+            }
+          }
+        }
+      }
+      facadeWindows.count = windowPlaced;
+      group.add(facadeWindows);
+
+      // Instanced street lamps mark the chunk's main intersections.
+      const lampPoleGeo = new THREE.CylinderGeometry(0.22, 0.32, 7, 6);
+      const lampHeadGeo = new THREE.BoxGeometry(2.2, 0.32, 0.8);
+      const lampPoleMat = new THREE.MeshStandardMaterial({ color: 0x343a40, metalness: 0.72, roughness: 0.4 });
+      const lampGlowMat = new THREE.MeshStandardMaterial({ color: 0xffe4ad, emissive: 0xffbd66, emissiveIntensity: 0.75 });
+      const lampPoles = new THREE.InstancedMesh(lampPoleGeo, lampPoleMat, 4);
+      const lampHeads = new THREE.InstancedMesh(lampHeadGeo, lampGlowMat, 4);
+      const lampDummy = new THREE.Object3D();
+      const lampPositions = [[-194, -194], [194, -194], [-194, 194], [194, 194]];
+      lampPositions.forEach((p, index) => {
+        lampDummy.position.set(p[0], 3.5, p[1]); lampDummy.scale.set(1, 1, 1); lampDummy.updateMatrix();
+        lampPoles.setMatrixAt(index, lampDummy.matrix);
+        lampDummy.position.set(p[0] + 1.1, 7.05, p[1]); lampDummy.updateMatrix();
+        lampHeads.setMatrixAt(index, lampDummy.matrix);
+      });
+      group.add(lampPoles, lampHeads);
+
       // Low-cost landmark terrain silhouettes; detailed terrain is added by biome passes.
       if (biome.name === 'Highlands' || biome.name === 'Forest') {
         const hillMat = new THREE.MeshStandardMaterial({ color: biome.name === 'Highlands' ? 0x626c61 : 0x31553a, roughness: 1 });
@@ -1413,6 +1489,29 @@
 
     // Load Nathan GLB from the repository-root assets location.
     let playerAnimationMixer = null;
+    const playerAnimationActions = {};
+    let activeCharacterAction = null;
+    let characterMotionClock = 0;
+    function updateCharacterAnimation(dt, movementAmount, sprinting) {
+      characterMotionClock += dt;
+      const motionKey = movementAmount < 0.12 ? 'idle' : (sprinting ? 'run' : 'walk');
+      const selected = playerAnimationActions[motionKey] ||
+        (motionKey === 'run' ? playerAnimationActions.walk : null) ||
+        playerAnimationActions.idle || playerAnimationActions.default || null;
+      if (selected && selected !== activeCharacterAction) {
+        if (activeCharacterAction) activeCharacterAction.fadeOut(0.18);
+        selected.reset().fadeIn(0.18).play();
+        activeCharacterAction = selected;
+      }
+      if (selected) selected.timeScale = motionKey === 'run' ? 1.12 : 1;
+      // Subtle root motion remains available when the GLB has no matching animation clips.
+      const bobAmount = movementAmount < 0.12 ? 0.012 : (sprinting ? 0.055 : 0.032);
+      playerMesh.position.y = Math.sin(characterMotionClock * (movementAmount < 0.12 ? 1.8 : 10.5)) * bobAmount;
+      playerMesh.rotation.z = THREE.MathUtils.lerp(
+        playerMesh.rotation.z, movementAmount < 0.12 ? 0 : (sprinting ? -0.035 : -0.018),
+        Math.min(1, dt * 7)
+      );
+    }
     function loadNathanPlayerModel() {
       if (!THREE.GLTFLoader) { showToast('Nathan loader unavailable — check internet connection'); return; }
       const modelUrl = new URL('models/nathan.glb', document.baseURI).href;
@@ -1445,7 +1544,16 @@
         playerMesh.add(model);
         if (gltf.animations && gltf.animations.length) {
           playerAnimationMixer = new THREE.AnimationMixer(model);
-          playerAnimationMixer.clipAction(gltf.animations[0]).play();
+          gltf.animations.forEach((clip, index) => {
+            const key = /idle|stand|breath/i.test(clip.name) ? 'idle'
+              : /run|sprint/i.test(clip.name) ? 'run'
+              : /walk|move|locomotion/i.test(clip.name) ? 'walk'
+              : (index === 0 ? 'default' : 'clip' + index);
+            if (!playerAnimationActions[key]) playerAnimationActions[key] = playerAnimationMixer.clipAction(clip);
+          });
+          const initialAction = playerAnimationActions.idle || playerAnimationActions.default ||
+            playerAnimationActions.walk || playerAnimationActions.run;
+          if (initialAction) { initialAction.play(); activeCharacterAction = initialAction; }
         }
         const findBone = (...names) => {
           for (const name of names) {
@@ -1871,6 +1979,7 @@
       }
 
       updateWorldStreaming(dt);
+      updateCharacterAnimation(dt, Math.hypot(playerVelX, playerVelZ), isSprinting);
 
       // World Animations, Traffic & NPCs
       for (let i = 0; i < animatables.length; i++) animatables[i].update(dt, elapsed);
