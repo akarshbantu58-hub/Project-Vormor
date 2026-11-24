@@ -66,7 +66,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showSplash = false) }
     }
 
-    fun setDirectorySheetVisible(visible: Boolean) {
+    fun returnToMenu() {\n        _uiState.update { it.copy(showSplash = true, showDirectorySheet = false) }\n    }\n\n    fun setDirectorySheetVisible(visible: Boolean) {
         _uiState.update { it.copy(showDirectorySheet = visible) }
     }
 
