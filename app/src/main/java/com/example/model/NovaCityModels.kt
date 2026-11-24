@@ -64,6 +64,7 @@ data class GameUiState(
     val isSeated: Boolean = false,
     val isDriving: Boolean = false,
     val vehicleSpeedKmh: Int = 0,
+    val vehicleGear: String = "P",
     val isSprinting: Boolean = false,
     val timePreset: TimeOfDayPreset = TimeOfDayPreset.SUNSET,
     val isRaining: Boolean = false,
