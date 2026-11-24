@@ -81,13 +81,15 @@ fun TouchControlsOverlay(
     isSeated: Boolean,
     isDriving: Boolean,
     vehicleSpeedKmh: Int,
+    vehicleGear: String,
     cameraSensitivity: Float,
     onJoystickMove: (Float, Float) -> Unit,
     onCameraDrag: (Float, Float) -> Unit,
     onJump: () -> Unit,
     onInteract: () -> Unit,
-    onDriveInput: (Float, Float, Float) -> Unit,
+    onDriveInput: (Float, Float, Float, Float) -> Unit,
     onExitVehicle: () -> Unit,
+    onHorn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
@@ -153,7 +155,7 @@ fun TouchControlsOverlay(
         }
 
         } else {
-            DrivingControls(speedKmh = vehicleSpeedKmh, onDriveInput = onDriveInput, onExitVehicle = onExitVehicle)
+            DrivingControls(speedKmh = vehicleSpeedKmh, gear = vehicleGear, onDriveInput = onDriveInput, onExitVehicle = onExitVehicle, onHorn = onHorn)
         }
 
         // Dynamic Interact Prompt Pill + Action Buttons (Bottom Right)
@@ -347,13 +349,16 @@ private fun VirtualAnalogStick(
 @Composable
 private fun DrivingControls(
     speedKmh: Int,
-    onDriveInput: (Float, Float, Float) -> Unit,
-    onExitVehicle: () -> Unit
+    gear: String,
+    onDriveInput: (Float, Float, Float, Float) -> Unit,
+    onExitVehicle: () -> Unit,
+    onHorn: () -> Unit
 ) {
     var throttle by remember { mutableStateOf(0f) }
     var steer by remember { mutableStateOf(0f) }
     var brake by remember { mutableStateOf(0f) }
-    fun sendDriveInput() = onDriveInput(throttle, steer, brake)
+    var handbrake by remember { mutableStateOf(0f) }
+    fun sendDriveInput() = onDriveInput(throttle, steer, brake, handbrake)
     Box(Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier.align(Alignment.BottomStart).padding(start = 20.dp, bottom = 24.dp),
@@ -370,12 +375,27 @@ private fun DrivingControls(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
-            Text("$speedKmh KM/H", color = SunsetGold, fontWeight = FontWeight.ExtraBold)
+            Surface(color = Color(0xDD101B2B), shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, CoastalCyan.copy(alpha = 0.75f))) {
+                Row(modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("$speedKmh", color = SunsetGold, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.headlineSmall)
+                        Text("KM/H", color = TextPrimary, style = MaterialTheme.typography.labelSmall)
+                    }
+                    Text("GEAR $gear", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            Surface(
+                modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick = onHorn),
+                color = Color(0xDD20364A), border = BorderStroke(1.dp, CoastalCyan.copy(alpha = 0.7f))
+            ) {
+                Text("HORN", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 19.dp, vertical = 10.dp))
+            }
             DriveHoldButton("BRAKE", "Brake") { pressed -> brake = if (pressed) 1f else 0f; sendDriveInput() }
             DriveHoldButton("GAS", "Accelerate") { pressed -> throttle = if (pressed) 1f else 0f; sendDriveInput() }
+            DriveHoldButton("HANDBRAKE", "Handbrake") { pressed -> handbrake = if (pressed) 1f else 0f; sendDriveInput() }
             Surface(
                 modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable {
-                    onDriveInput(0f, 0f, 0f)
+                    onDriveInput(0f, 0f, 0f, 0f)
                     onExitVehicle()
                 },
                 color = Color(0xDD8E2633),
