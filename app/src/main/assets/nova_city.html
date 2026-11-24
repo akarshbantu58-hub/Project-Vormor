@@ -499,6 +499,8 @@
     // =========================================================================
     // 5. WORLD ROADS, HARBOUR, BEACH, PALM TREES & YACHTS
     // =========================================================================
+    // Phase 2: deterministic subdivided terrain for streamed 270 km² world.
+    // Height is derived from world coordinates, so adjacent chunk borders match.
     // =========================================================================
     // 5A. WILD HORIZON 8KM WORLD EXPANSION — STREAMED 500M MAP CHUNKS
     // The original Nova City core and its enterable interiors remain untouched.
@@ -548,7 +550,30 @@
       group.position.set(cx, 0, cz);
 
       const groundMat = new THREE.MeshStandardMaterial({ color: biome.ground, roughness: 0.98 });
-      const groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE), groundMat);
+      // Shared world-space height function keeps neighbouring chunk edges aligned.
+      // Roads are flattened into gentle terrain so the existing driving surface remains usable.
+      function worldTerrainHeight(wx, wz) {
+        const roadX = Math.min(...[-180, 0, 180].map(v => Math.abs(((wx % WORLD_CHUNK_SIZE) + WORLD_CHUNK_SIZE) % WORLD_CHUNK_SIZE - (v + 250))));
+        const roadZ = Math.min(...[-180, 0, 180].map(v => Math.abs(((wz % WORLD_CHUNK_SIZE) + WORLD_CHUNK_SIZE) % WORLD_CHUNK_SIZE - (v + 250))));
+        const roadInfluence = Math.max(0, 1 - Math.min(roadX, roadZ) / 28);
+        const broad = Math.sin(wx * 0.00072) * Math.cos(wz * 0.00061);
+        const detail = Math.sin(wx * 0.0021 + wz * 0.0013) * Math.cos(wz * 0.0017);
+        let h = 0;
+        if (biome.name === 'Highlands') h = 12 + broad * 20 + detail * 5;
+        else if (biome.name === 'Forest') h = 2 + broad * 4 + detail * 1.5;
+        else if (biome.name === 'Rural') h = 1 + broad * 2.5;
+        return h * (1 - roadInfluence);
+      }
+      const groundGeometry = new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, 16, 16);
+      const groundPositions = groundGeometry.attributes.position;
+      for (let vi = 0; vi < groundPositions.count; vi++) {
+        const wx = cx + groundPositions.getX(vi);
+        const wz = cz - groundPositions.getY(vi);
+        groundPositions.setZ(vi, worldTerrainHeight(wx, wz));
+      }
+      groundPositions.needsUpdate = true;
+      groundGeometry.computeVertexNormals();
+      const groundMesh = new THREE.Mesh(groundGeometry, groundMat);
       groundMesh.rotation.x = -Math.PI / 2;
       groundMesh.position.y = -0.035;
       groundMesh.receiveShadow = true;
