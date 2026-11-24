@@ -16,7 +16,7 @@
         android:theme="@style/Theme.MyApplication">
         <activity
             android:name=".MainActivity"
-            android:screenOrientation="portrait"
+            android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="true"
             android:hardwareAccelerated="true"
