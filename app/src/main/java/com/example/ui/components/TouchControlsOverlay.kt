@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -78,11 +79,15 @@ import kotlin.math.hypot
 fun TouchControlsOverlay(
     interactPrompt: String?,
     isSeated: Boolean,
+    isDriving: Boolean,
+    vehicleSpeedKmh: Int,
     cameraSensitivity: Float,
     onJoystickMove: (Float, Float) -> Unit,
     onCameraDrag: (Float, Float) -> Unit,
     onJump: () -> Unit,
     onInteract: () -> Unit,
+    onDriveInput: (Float, Float, Float) -> Unit,
+    onExitVehicle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
@@ -131,6 +136,7 @@ fun TouchControlsOverlay(
                 }
         )
 
+        if (!isDriving) {
         // Left-side Virtual Analog Stick (Walk + Outer Ring Auto-Sprint)
         Box(
             modifier = Modifier
@@ -146,8 +152,12 @@ fun TouchControlsOverlay(
             )
         }
 
+        } else {
+            DrivingControls(speedKmh = vehicleSpeedKmh, onDriveInput = onDriveInput, onExitVehicle = onExitVehicle)
+        }
+
         // Dynamic Interact Prompt Pill + Action Buttons (Bottom Right)
-        Column(
+        if (!isDriving) Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .windowInsetsPadding(WindowInsets.navigationBars)
@@ -330,6 +340,76 @@ private fun VirtualAnalogStick(
                 )
             }
         }
+    }
+}
+
+
+@Composable
+private fun DrivingControls(
+    speedKmh: Int,
+    onDriveInput: (Float, Float, Float) -> Unit,
+    onExitVehicle: () -> Unit
+) {
+    var throttle by remember { mutableStateOf(0f) }
+    var steer by remember { mutableStateOf(0f) }
+    var brake by remember { mutableStateOf(0f) }
+    fun sendDriveInput() = onDriveInput(throttle, steer, brake)
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 20.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                DriveHoldButton("◀", "Steer left") { pressed -> steer = if (pressed) -1f else 0f; sendDriveInput() }
+                DriveHoldButton("▶", "Steer right") { pressed -> steer = if (pressed) 1f else 0f; sendDriveInput() }
+            }
+            Text("STEERING", color = Color.White.copy(alpha = 0.72f), fontWeight = FontWeight.Bold)
+        }
+        Column(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 22.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(9.dp)
+        ) {
+            Text("$speedKmh KM/H", color = SunsetGold, fontWeight = FontWeight.ExtraBold)
+            DriveHoldButton("BRAKE", "Brake") { pressed -> brake = if (pressed) 1f else 0f; sendDriveInput() }
+            DriveHoldButton("GAS", "Accelerate") { pressed -> throttle = if (pressed) 1f else 0f; sendDriveInput() }
+            Surface(
+                modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable {
+                    onDriveInput(0f, 0f, 0f)
+                    onExitVehicle()
+                },
+                color = Color(0xDD8E2633),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.5f))
+            ) {
+                Text("EXIT CAR", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 18.dp, vertical = 11.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DriveHoldButton(
+    label: String,
+    description: String,
+    onHold: (Boolean) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(width = if (label == "GAS" || label == "BRAKE") 82.dp else 62.dp, height = 62.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xCC101B2B))
+            .border(1.5.dp, CoastalCyan.copy(alpha = 0.8f), RoundedCornerShape(18.dp))
+            .pointerInput(description) {
+                detectTapGestures(onPress = {
+                    onHold(true)
+                    tryAwaitRelease()
+                    onHold(false)
+                })
+            }
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = Color.White, fontWeight = FontWeight.ExtraBold)
     }
 }
 
