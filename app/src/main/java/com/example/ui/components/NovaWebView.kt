@@ -48,7 +48,12 @@ class NovaEngineController {
         }
     }
 
-    fun setEnginePaused(paused: Boolean) {\n        val target = webView ?: return\n        mainHandler.post { if (paused) target.onPause() else target.onResume() }\n    }\n\n    fun setJoystick(x: Float, y: Float) {
+    fun setEnginePaused(paused: Boolean) {
+        val target = webView ?: return
+        mainHandler.post { if (paused) target.onPause() else target.onResume() }
+    }
+
+    fun setJoystick(x: Float, y: Float) {
         val fx = String.format(Locale.US, "%.3f", x.coerceIn(-1f, 1f))
         val fy = String.format(Locale.US, "%.3f", y.coerceIn(-1f, 1f))
         evalJs("window.NovaGame && window.NovaGame.setJoy($fx,$fy);")
