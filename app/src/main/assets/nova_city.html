@@ -581,6 +581,64 @@
 
       const roadMat = new THREE.MeshStandardMaterial({ color: biome.road, roughness: 0.92 });
       const shoulderMat = new THREE.MeshStandardMaterial({ color: 0xb6ad91, roughness: 1 });
+
+      // Phase 3 water features: a continuous river ribbon, selected lakes,
+      // and an ocean-facing coastal strip along the eastern map boundary.
+      const waterMat = new THREE.MeshStandardMaterial({
+        color: 0x287f9d, roughness: 0.22, metalness: 0.08,
+        transparent: true, opacity: 0.88
+      });
+      const riverPositions = [];
+      const riverIndices = [];
+      let riverVertex = 0;
+      for (let step = 0; step <= 20; step++) {
+        const lz = -250 + step * 25;
+        const wz = cz + lz;
+        const riverWorldX = -1800 + 900 * Math.sin(wz * 0.00045);
+        const lx = riverWorldX - cx;
+        if (lx < -260 || lx > 260) continue;
+        riverPositions.push(lx - 9, 0.035, lz, lx + 9, 0.035, lz);
+        if (riverVertex > 0) {
+          const a = riverVertex - 2, b = riverVertex - 1, c = riverVertex, d = riverVertex + 1;
+          riverIndices.push(a, b, c, b, d, c);
+        }
+        riverVertex += 2;
+      }
+      if (riverVertex >= 4) {
+        const riverGeometry = new THREE.BufferGeometry();
+        riverGeometry.setAttribute('position', new THREE.Float32BufferAttribute(riverPositions, 3));
+        riverGeometry.setIndex(riverIndices);
+        riverGeometry.computeVertexNormals();
+        const river = new THREE.Mesh(riverGeometry, waterMat);
+        river.name = 'ProceduralRiver';
+        group.add(river);
+      }
+
+      // Deterministic lakes in selected forest and rural districts.
+      const lakeSeed = Math.abs((ix * 92821) ^ (iz * 68917));
+      if ((biome.name === 'Forest' || biome.name === 'Rural') && lakeSeed % 11 === 0) {
+        const lakeRadius = 28 + (lakeSeed % 24);
+        const lake = new THREE.Mesh(
+          new THREE.CircleGeometry(lakeRadius, 32),
+          waterMat
+        );
+        lake.name = 'ProceduralLake';
+        lake.rotation.x = -Math.PI / 2;
+        lake.position.set(((lakeSeed % 240) - 120), 0.04, (((lakeSeed >> 4) % 240) - 120));
+        group.add(lake);
+      }
+
+      // The far eastern edge opens onto the ocean; the neighbouring land stays walkable.
+      if (ix === WORLD_MAX_CHUNK_X) {
+        const ocean = new THREE.Mesh(
+          new THREE.PlaneGeometry(100, WORLD_CHUNK_SIZE),
+          waterMat
+        );
+        ocean.name = 'EasternOcean';
+        ocean.rotation.x = -Math.PI / 2;
+        ocean.position.set(200, 0.025, 0);
+        group.add(ocean);
+      }
       // A connected arterial grid links every streamed chunk to its neighbours.
       for (const offset of [-180, 0, 180]) {
         const horizontal = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, offset === 0 ? 13 : 9), roadMat);
