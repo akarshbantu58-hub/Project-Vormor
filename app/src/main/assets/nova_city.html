@@ -720,7 +720,7 @@
         emissive: 0x172631, emissiveIntensity: 0.22
       });
       const windowGeo = new THREE.PlaneGeometry(3.1, 1.75);
-      const maxWindows = districtCount * 72;
+      const maxWindows = districtCount * 160;
       const facadeWindows = new THREE.InstancedMesh(windowGeo, windowMaterial, maxWindows);
       facadeWindows.name = 'ProceduralFacadeWindows';
       facadeWindows.castShadow = false;
