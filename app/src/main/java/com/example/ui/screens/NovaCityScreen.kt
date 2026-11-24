@@ -5,9 +5,22 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background\nimport androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize\nimport androidx.compose.foundation.layout.padding\nimport androidx.compose.foundation.layout.size\nimport androidx.compose.foundation.shape.RoundedCornerShape\nimport androidx.compose.material.icons.Icons\nimport androidx.compose.material.icons.filled.Pause\nimport androidx.compose.material3.Icon\nimport androidx.compose.material3.Surface\nimport androidx.compose.ui.Alignment\nimport androidx.compose.ui.graphics.Color\nimport androidx.compose.ui.unit.dp\nimport androidx.compose.ui.text.font.FontWeight\nimport androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -21,7 +34,8 @@ import com.example.ui.components.NovaCityWebView
 import com.example.ui.components.NovaDirectorySheet
 import com.example.ui.components.NovaEngineController
 import com.example.ui.components.TouchControlsOverlay
-import com.example.ui.theme.MidnightObsidian\nimport com.example.ui.screens.PauseOverlay
+import com.example.ui.theme.MidnightObsidian
+import com.example.ui.screens.PauseOverlay
 import com.example.viewmodel.GameViewModel
 
 @Composable
@@ -30,7 +44,8 @@ fun NovaCityScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val engineController = remember { NovaEngineController() }\n    var showPause by remember { androidx.compose.runtime.mutableStateOf(false) }
+    val engineController = remember { NovaEngineController() }
+    var showPause by remember { androidx.compose.runtime.mutableStateOf(false) }
 
     // Keep persisted settings synchronized with the WebGL engine once ready
     LaunchedEffect(uiState.engineStatus, settings.audioEnabled, settings.highResRender) {
@@ -40,7 +55,13 @@ fun NovaCityScreen(
         }
     }
 
-    BackHandler(enabled = !uiState.showSplash && !uiState.showDirectorySheet) {\n        showPause = !showPause\n        engineController.setJoystick(0f, 0f)\n        engineController.setEnginePaused(showPause)\n    }\n\n    // Intercept system back button when Directory Sheet is open
+    BackHandler(enabled = !uiState.showSplash && !uiState.showDirectorySheet) {
+        showPause = !showPause
+        engineController.setJoystick(0f, 0f)
+        engineController.setEnginePaused(showPause)
+    }
+
+    // Intercept system back button when Directory Sheet is open
     BackHandler(enabled = uiState.showDirectorySheet) {
         viewModel.setDirectorySheetVisible(false)
     }
@@ -96,7 +117,35 @@ fun NovaCityScreen(
             )
         }
 
-        if (!uiState.showSplash && !showPause) {\n            Surface(\n                modifier = Modifier.align(Alignment.TopEnd).padding(12.dp).clickable {\n                    engineController.setJoystick(0f, 0f)\n                    showPause = true\n                    engineController.setEnginePaused(true)\n                },\n                color = Color(0xD91A202A), shape = RoundedCornerShape(24.dp),\n                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFC857))\n            ) {\n                androidx.compose.foundation.layout.Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {\n                    Icon(Icons.Filled.Pause, null, tint = Color(0xFFFFC857), modifier = Modifier.size(17.dp))\n                    androidx.compose.foundation.layout.Spacer(Modifier.size(7.dp))\n                    androidx.compose.material3.Text("PAUSE", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)\n                }\n            }\n        }\n\n        if (showPause) {\n            PauseOverlay(\n                onResume = { showPause = false; engineController.setEnginePaused(false) },\n                onMap = { showPause = false; engineController.setEnginePaused(false); viewModel.setDirectorySheetVisible(true) },\n                onSettings = { showPause = false; engineController.setEnginePaused(false); viewModel.setDirectorySheetVisible(true) },\n                onSave = { viewModel.showToast("Save slot support is being added") },\n                onMainMenu = { showPause = false; engineController.setEnginePaused(false); viewModel.setDirectorySheetVisible(false); viewModel.returnToMenu() }\n            )\n        }\n\n        // Layer 4: Cinematic Launch Splash Screen
+        if (!uiState.showSplash && !showPause) {
+            Surface(
+                modifier = Modifier.align(Alignment.TopEnd).padding(12.dp).clickable {
+                    engineController.setJoystick(0f, 0f)
+                    showPause = true
+                    engineController.setEnginePaused(true)
+                },
+                color = Color(0xD91A202A), shape = RoundedCornerShape(24.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFC857))
+            ) {
+                androidx.compose.foundation.layout.Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Pause, null, tint = Color(0xFFFFC857), modifier = Modifier.size(17.dp))
+                    androidx.compose.foundation.layout.Spacer(Modifier.size(7.dp))
+                    androidx.compose.material3.Text("PAUSE", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        if (showPause) {
+            PauseOverlay(
+                onResume = { showPause = false; engineController.setEnginePaused(false) },
+                onMap = { showPause = false; engineController.setEnginePaused(false); viewModel.setDirectorySheetVisible(true) },
+                onSettings = { showPause = false; engineController.setEnginePaused(false); viewModel.setDirectorySheetVisible(true) },
+                onSave = { viewModel.showToast("Save slot support is being added") },
+                onMainMenu = { showPause = false; engineController.setEnginePaused(false); viewModel.setDirectorySheetVisible(false); viewModel.returnToMenu() }
+            )
+        }
+
+        // Layer 4: Cinematic Launch Splash Screen
         AnimatedVisibility(
             visible = uiState.showSplash,
             enter = fadeIn(tween(250)),
