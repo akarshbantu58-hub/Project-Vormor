@@ -10,7 +10,7 @@ plugins {
 
 android {
   namespace = "com.example"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  compileSdk { version = release(36) { minorApiLevel = 1 } }\n  ndkVersion = "27.2.12479018"\n  externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
 
   defaultConfig {
     applicationId = "com.aistudio.wildhorizon.nxvrkp"
