@@ -415,7 +415,7 @@ private fun DriveHoldButton(
 ) {
     Box(
         modifier = Modifier
-            .size(width = if (label == "GAS" || label == "BRAKE") 82.dp else 62.dp, height = 62.dp)
+            .size(width = when (label) { "HANDBRAKE" -> 104.dp; "GAS", "BRAKE" -> 82.dp; else -> 62.dp }, height = 62.dp)
             .clip(RoundedCornerShape(18.dp))
             .background(Color(0xCC101B2B))
             .border(1.5.dp, CoastalCyan.copy(alpha = 0.8f), RoundedCornerShape(18.dp))
