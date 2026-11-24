@@ -1556,6 +1556,7 @@
     driveCar.position.set(3.7, 0.02, 10);
     scene.add(driveCar);
     let driveCarSpeed = 0;
+    let driveCamYawOffset = 0;
     const driveInput = { throttle: 0, steer: 0, brake: 0 };
     function enterDriveCar() {
       if (state.isDriving) return;
@@ -1563,6 +1564,7 @@
       playerMesh.visible = false;
       player.position.set(driveCar.position.x, driveCar.position.y, driveCar.position.z);
       driveCarSpeed = 0; driveInput.throttle = driveInput.steer = driveInput.brake = 0;
+      driveCamYawOffset = 0;
       camYaw = driveCar.rotation.y + Math.PI;
       startEngineAudio();
       playTone(170, 0.12, 'sawtooth', 0.025);
@@ -1909,7 +1911,9 @@
       },
       exitVehicle: () => exitDriveCar(),
       addLook: (dx, dy) => {
-        camYaw -= (Number(dx) || 0) * 0.0052;
+        const lookX = (Number(dx) || 0) * 0.0052;
+        camYaw -= lookX;
+        if (state.isDriving) driveCamYawOffset -= lookX;
         camPitch = Math.max(-0.42, Math.min(1.12, camPitch + (Number(dy) || 0) * 0.0046));
       },
       jump: () => {
@@ -2025,7 +2029,8 @@
         player.position.copy(driveCar.position);
         playerVelX = Math.sin(driveCar.rotation.y) * driveCarSpeed;
         playerVelZ = Math.cos(driveCar.rotation.y) * driveCarSpeed;
-        camYaw = driveCar.rotation.y + Math.PI;
+        camYaw = driveCar.rotation.y + Math.PI + driveCamYawOffset;
+        driveCar.rotation.z += (-driveInput.steer * speedFactor * 0.055 - driveCar.rotation.z) * Math.min(1, dt * 5);
         state.vehicleSpeedKmh = Math.round(Math.abs(driveCarSpeed) * 3.6);
         updateEngineAudio(driveCarSpeed, Math.abs(throttle));
       } else {
