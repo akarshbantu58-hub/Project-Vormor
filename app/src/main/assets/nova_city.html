@@ -105,6 +105,8 @@
       isRaining: false,
       camDistMode: 0,
       isSeated: false,
+      isDriving: false,
+      vehicleSpeedKmh: 0,
       seatReturnPos: null,
       audioEnabled: true,
       zoneLabel: 'Horizon Ave — Downtown'
@@ -490,6 +492,44 @@
         osc.connect(gain); gain.connect(audioCtx.destination);
         osc.start(); osc.stop(audioCtx.currentTime + dur);
       } catch (e) {}
+    }
+
+    // Procedural engine audio: layered oscillators with speed-sensitive pitch.
+    let engineOsc = null, engineHarmonic = null, engineFilter = null, engineGain = null;
+    function startEngineAudio() {
+      if (!state.audioEnabled || engineOsc) return;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        engineOsc = audioCtx.createOscillator();
+        engineHarmonic = audioCtx.createOscillator();
+        engineFilter = audioCtx.createBiquadFilter();
+        engineGain = audioCtx.createGain();
+        engineOsc.type = 'sawtooth'; engineHarmonic.type = 'triangle';
+        engineOsc.frequency.value = 58; engineHarmonic.frequency.value = 116;
+        engineFilter.type = 'lowpass'; engineFilter.frequency.value = 420;
+        engineGain.gain.value = 0.0001;
+        engineOsc.connect(engineFilter); engineHarmonic.connect(engineFilter);
+        engineFilter.connect(engineGain); engineGain.connect(audioCtx.destination);
+        engineOsc.start(); engineHarmonic.start();
+        engineGain.gain.setTargetAtTime(0.045, audioCtx.currentTime, 0.16);
+      } catch (e) { engineOsc = null; }
+    }
+    function updateEngineAudio(speed, throttle) {
+      if (!engineOsc || !audioCtx) return;
+      const rpm = 58 + Math.min(1, Math.abs(speed) / 33) * 92 + throttle * 24;
+      engineOsc.frequency.setTargetAtTime(rpm, audioCtx.currentTime, 0.09);
+      engineHarmonic.frequency.setTargetAtTime(rpm * 2.02, audioCtx.currentTime, 0.1);
+      engineFilter.frequency.setTargetAtTime(320 + rpm * 2.1, audioCtx.currentTime, 0.12);
+      engineGain.gain.setTargetAtTime(0.025 + Math.min(1, Math.abs(speed) / 32) * 0.035, audioCtx.currentTime, 0.12);
+    }
+    function stopEngineAudio() {
+      if (!engineOsc || !audioCtx) return;
+      const now = audioCtx.currentTime;
+      engineGain.gain.setTargetAtTime(0.0001, now, 0.08);
+      const oldOsc = engineOsc, oldHarmonic = engineHarmonic;
+      engineOsc = engineHarmonic = engineFilter = engineGain = null;
+      setTimeout(() => { try { oldOsc.stop(); oldHarmonic.stop(); } catch (e) {} }, 420);
     }
 
     function showToast(msg) {
@@ -1487,6 +1527,63 @@
     player.add(playerMesh);
     scene.add(player);
 
+    // Player-owned sedan, separate from ambient traffic.
+    const driveCar = new THREE.Group();
+    const carPaint = new THREE.MeshStandardMaterial({ color: 0x1769aa, metalness: 0.78, roughness: 0.19, envMapIntensity: 1.7 });
+    const carTrim = new THREE.MeshStandardMaterial({ color: 0x151a20, metalness: 0.55, roughness: 0.3 });
+    const carGlass = new THREE.MeshPhysicalMaterial({ color: 0x9ec8dc, transparent: true, opacity: 0.48, roughness: 0.08, metalness: 0.18, clearcoat: 1 });
+    const carHeadMat = new THREE.MeshBasicMaterial({ color: 0xfff0c2 });
+    const carTailMat = new THREE.MeshBasicMaterial({ color: 0xe32636 });
+    addBox(1.92, 0.58, 4.35, 0, 0.68, 0, carPaint, driveCar);
+    addBox(1.62, 0.66, 2.18, 0, 1.23, -0.12, carGlass, driveCar);
+    addBox(1.88, 0.12, 1.18, 0, 1.02, 1.12, carPaint, driveCar);
+    addBox(1.88, 0.12, 0.92, 0, 1.02, -1.42, carPaint, driveCar);
+    addBox(1.86, 0.12, 4.0, 0, 0.42, 0, carTrim, driveCar);
+    addBox(1.72, 0.12, 0.16, 0, 0.92, 2.12, carTrim, driveCar);
+    addBox(0.34, 0.16, 0.08, -0.62, 0.78, 2.2, carHeadMat, driveCar, false);
+    addBox(0.34, 0.16, 0.08, 0.62, 0.78, 2.2, carHeadMat, driveCar, false);
+    addBox(0.34, 0.16, 0.08, -0.62, 0.78, -2.2, carTailMat, driveCar, false);
+    addBox(0.34, 0.16, 0.08, 0.62, 0.78, -2.2, carTailMat, driveCar, false);
+    const driveWheels = [];
+    [[-0.99,0.68,1.36],[0.99,0.68,1.36],[-0.99,0.68,-1.36],[0.99,0.68,-1.36]].forEach(([x,y,z],i) => {
+      const pivot = new THREE.Group(); pivot.position.set(x,y,z); driveCar.add(pivot);
+      const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.36,0.36,0.24,20), carTrim);
+      tire.rotation.z = Math.PI / 2; tire.castShadow = true; pivot.add(tire);
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.17,0.17,0.255,16), mats.metal);
+      hub.rotation.z = Math.PI / 2; pivot.add(hub);
+      driveWheels.push({pivot,tire,front:i<2});
+    });
+    driveCar.position.set(3.7, 0.02, 10);
+    scene.add(driveCar);
+    let driveCarSpeed = 0;
+    const driveInput = { throttle: 0, steer: 0, brake: 0 };
+    function enterDriveCar() {
+      if (state.isDriving) return;
+      state.isDriving = true; state.isSeated = false;
+      playerMesh.visible = false;
+      player.position.set(driveCar.position.x, driveCar.position.y, driveCar.position.z);
+      driveCarSpeed = 0; driveInput.throttle = driveInput.steer = driveInput.brake = 0;
+      camYaw = driveCar.rotation.y + Math.PI;
+      startEngineAudio();
+      playTone(170, 0.12, 'sawtooth', 0.025);
+      showToast('Vehicle entered — GAS to accelerate, BRAKE to slow');
+    }
+    function exitDriveCar() {
+      if (!state.isDriving) return;
+      state.isDriving = false; playerMesh.visible = true;
+      player.position.set(driveCar.position.x - Math.cos(driveCar.rotation.y) * 2.2, 0.16, driveCar.position.z + Math.sin(driveCar.rotation.y) * 2.2);
+      playerMesh.rotation.y = driveCar.rotation.y + Math.PI / 2;
+      driveCarSpeed = 0; driveInput.throttle = driveInput.steer = driveInput.brake = 0;
+      playerVelX = 0; playerVelZ = 0;
+      stopEngineAudio();
+      showToast('Exited vehicle');
+    }
+    interactables.push({
+      pos: new THREE.Vector3(3.7, 1.0, 10), radius: 4.1,
+      getPrompt: () => state.isDriving ? 'Exit Vehicle' : 'Enter Blue Sedan',
+      interact: () => state.isDriving ? exitDriveCar() : enterDriveCar()
+    });
+
     // Load Nathan GLB from the repository-root assets location.
     let playerAnimationMixer = null;
     const playerAnimationActions = {};
@@ -1805,11 +1902,18 @@
         joy.x = Math.max(-1, Math.min(1, Number(x) || 0));
         joy.y = Math.max(-1, Math.min(1, Number(y) || 0));
       },
+      setDrive: (throttle, steer, brake) => {
+        driveInput.throttle = Math.max(-1, Math.min(1, Number(throttle) || 0));
+        driveInput.steer = Math.max(-1, Math.min(1, Number(steer) || 0));
+        driveInput.brake = Math.max(0, Math.min(1, Number(brake) || 0));
+      },
+      exitVehicle: () => exitDriveCar(),
       addLook: (dx, dy) => {
         camYaw -= (Number(dx) || 0) * 0.0052;
         camPitch = Math.max(-0.42, Math.min(1.12, camPitch + (Number(dy) || 0) * 0.0046));
       },
       jump: () => {
+        if (state.isDriving) { exitDriveCar(); return; }
         if (state.isSeated) {
           standUp();
           playTone(300, 0.06);
@@ -1820,6 +1924,7 @@
         }
       },
       interact: () => {
+        if (state.isDriving) { exitDriveCar(); return; }
         const nearest = getNearestInteractable();
         if (nearest) nearest.interact();
       },
