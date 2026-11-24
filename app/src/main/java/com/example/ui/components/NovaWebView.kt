@@ -65,11 +65,16 @@ class NovaEngineController {
         evalJs("window.NovaGame && window.NovaGame.addLook($fdx,$fdy);")
     }
 
-    fun setDriveInput(throttle: Float, steer: Float, brake: Float) {
+    fun setDriveInput(throttle: Float, steer: Float, brake: Float, handbrake: Float) {
         val t = String.format(Locale.US, "%.2f", throttle.coerceIn(-1f, 1f))
         val s = String.format(Locale.US, "%.2f", steer.coerceIn(-1f, 1f))
         val b = String.format(Locale.US, "%.2f", brake.coerceIn(0f, 1f))
-        evalJs("window.NovaGame && window.NovaGame.setDrive($t,$s,$b);")
+        val h = String.format(Locale.US, "%.2f", handbrake.coerceIn(0f, 1f))
+        evalJs("window.NovaGame && window.NovaGame.setDrive($t,$s,$b,$h);")
+    }
+
+    fun honkVehicle() {
+        evalJs("window.NovaGame && window.NovaGame.horn();")
     }
 
     fun exitVehicle() {
