@@ -107,6 +107,7 @@
       isSeated: false,
       isDriving: false,
       vehicleSpeedKmh: 0,
+      vehicleGear: 'P',
       seatReturnPos: null,
       audioEnabled: true,
       zoneLabel: 'Horizon Ave — Downtown'
@@ -1557,13 +1558,17 @@
     scene.add(driveCar);
     let driveCarSpeed = 0;
     let driveCamYawOffset = 0;
-    const driveInput = { throttle: 0, steer: 0, brake: 0 };
+    let driveSuspensionY = 0, driveSuspensionVelocity = 0;
+    let driveBodyPitch = 0;
+    let driveGear = 1, driveGearClock = 0;
+    const driveGearLimits = [0, 9.5, 18.5, 28.5, 39.0];
+    const driveInput = { throttle: 0, steer: 0, brake: 0, handbrake: 0 };
     function enterDriveCar() {
       if (state.isDriving) return;
       state.isDriving = true; state.isSeated = false;
       playerMesh.visible = false;
       player.position.set(driveCar.position.x, driveCar.position.y, driveCar.position.z);
-      driveCarSpeed = 0; driveInput.throttle = driveInput.steer = driveInput.brake = 0;
+      driveCarSpeed = 0; driveInput.throttle = driveInput.steer = driveInput.brake = driveInput.handbrake = 0;
       driveCamYawOffset = 0;
       camYaw = driveCar.rotation.y + Math.PI;
       startEngineAudio();
@@ -1575,7 +1580,7 @@
       state.isDriving = false; playerMesh.visible = true;
       player.position.set(driveCar.position.x - Math.cos(driveCar.rotation.y) * 2.2, 0.16, driveCar.position.z + Math.sin(driveCar.rotation.y) * 2.2);
       playerMesh.rotation.y = driveCar.rotation.y + Math.PI / 2;
-      driveCarSpeed = 0; driveInput.throttle = driveInput.steer = driveInput.brake = 0;
+      driveCarSpeed = 0; driveInput.throttle = driveInput.steer = driveInput.brake = driveInput.handbrake = 0;
       playerVelX = 0; playerVelZ = 0;
       stopEngineAudio();
       showToast('Exited vehicle');
@@ -1904,10 +1909,11 @@
         joy.x = Math.max(-1, Math.min(1, Number(x) || 0));
         joy.y = Math.max(-1, Math.min(1, Number(y) || 0));
       },
-      setDrive: (throttle, steer, brake) => {
+      setDrive: (throttle, steer, brake, handbrake) => {
         driveInput.throttle = Math.max(-1, Math.min(1, Number(throttle) || 0));
         driveInput.steer = Math.max(-1, Math.min(1, Number(steer) || 0));
         driveInput.brake = Math.max(0, Math.min(1, Number(brake) || 0));
+        driveInput.handbrake = Math.max(0, Math.min(1, Number(handbrake) || 0));
       },
       exitVehicle: () => exitDriveCar(),
       addLook: (dx, dy) => {
@@ -2002,39 +2008,73 @@
 
       if (state.isDriving) {
         const throttle = driveInput.throttle;
+        const absSpeed = Math.abs(driveCarSpeed);
         if (driveInput.brake > 0.05) {
-          driveCarSpeed *= Math.max(0, 1 - dt * (7 + driveInput.brake * 11));
+          driveCarSpeed *= Math.max(0, 1 - dt * (6.5 + driveInput.brake * 10));
         } else if (Math.abs(throttle) > 0.02) {
           const sameDirection = driveCarSpeed === 0 || Math.sign(driveCarSpeed) === Math.sign(throttle);
-          const accel = throttle > 0 ? (sameDirection ? 9.2 : 13.5) : (sameDirection ? 7.0 : 12.0);
-          driveCarSpeed += throttle * accel * dt;
+          const gearAccel = [9.8, 7.2, 5.6, 4.1, 3.0][Math.max(0, driveGear - 1)];
+          driveCarSpeed += throttle * (sameDirection ? gearAccel : 12.5) * dt;
         } else {
-          driveCarSpeed *= Math.max(0, 1 - dt * 0.72);
+          driveCarSpeed *= Math.max(0, 1 - dt * 0.58);
         }
-        driveCarSpeed = Math.max(-10, Math.min(34, driveCarSpeed));
-        const speedFactor = Math.min(1, Math.abs(driveCarSpeed) / 8);
-        const steerRate = (0.18 + speedFactor * 0.78) * (driveCarSpeed < -0.2 ? -1 : 1);
-        driveCar.rotation.y += driveInput.steer * steerRate * dt;
+        if (driveInput.handbrake > 0.05) driveCarSpeed *= Math.max(0, 1 - dt * 2.8);
+        driveCarSpeed = Math.max(-9, Math.min(46, driveCarSpeed));
+
+        // Automatic gearbox with short shift pauses and speed-dependent steering.
+        const forwardSpeed = Math.max(0, driveCarSpeed);
+        let targetGear = 1;
+        for (let i = 1; i < driveGearLimits.length; i++) if (forwardSpeed > driveGearLimits[i]) targetGear = Math.min(5, i + 1);
+        if (driveCarSpeed < -0.5) targetGear = 0;
+        if (targetGear !== driveGear) {
+          driveGearClock += dt;
+          if (driveGearClock > 0.16) { driveGear = targetGear; driveGearClock = 0; playTone(110 + driveGear * 20, 0.055, 'triangle', 0.018); }
+        } else driveGearClock = 0;
+        state.vehicleGear = driveGear === 0 ? 'R' : String(driveGear);
+
+        const speedFactor = Math.min(1, absSpeed / 15);
+        const lowSpeedSteer = 1 - speedFactor * 0.58;
+        const steerRate = (0.22 + speedFactor * 0.62) * lowSpeedSteer * (driveCarSpeed < -0.2 ? -1 : 1);
+        const steering = driveInput.steer * steerRate;
+        driveCar.rotation.y += steering * dt;
+
+        // Mild lateral grip loss under aggressive steering/handbrake, damped every frame.
+        const slip = Math.abs(driveInput.steer) * speedFactor * (driveInput.handbrake > 0.1 ? 0.34 : 0.10);
+        const forwardX = Math.sin(driveCar.rotation.y), forwardZ = Math.cos(driveCar.rotation.y);
+        const sideX = Math.cos(driveCar.rotation.y), sideZ = -Math.sin(driveCar.rotation.y);
+        const lateral = steering * driveCarSpeed * slip;
+        const moveX = forwardX * driveCarSpeed + sideX * lateral;
+        const moveZ = forwardZ * driveCarSpeed + sideZ * lateral;
         const oldX = driveCar.position.x, oldZ = driveCar.position.z;
-        driveCar.position.x += Math.sin(driveCar.rotation.y) * driveCarSpeed * dt;
-        driveCar.position.z += Math.cos(driveCar.rotation.y) * driveCarSpeed * dt;
+        driveCar.position.x += moveX * dt;
+        driveCar.position.z += moveZ * dt;
         resolveCollisions(driveCar.position, 1.12);
-        if (Math.abs(driveCar.position.x-oldX) + Math.abs(driveCar.position.z-oldZ) > Math.abs(driveCarSpeed*dt)*0.6) driveCarSpeed *= -0.18;
-        const groundY = getGroundElevation(driveCar.position.x, driveCar.position.y, driveCar.position.z);
-        driveCar.position.y += (groundY + 0.02 - driveCar.position.y) * Math.min(1, dt * 8);
+        const hit = Math.abs(driveCar.position.x-oldX) + Math.abs(driveCar.position.z-oldZ) > Math.abs(driveCarSpeed*dt)*0.62;
+        if (hit) { driveCarSpeed *= -0.12; playTone(72, 0.12, 'triangle', 0.045); }
+
+        // Spring-damper suspension follows terrain without snapping the chassis.
+        const groundY = getGroundElevation(driveCar.position.x, driveCar.position.y, driveCar.position.z) + 0.02;
+        const suspensionForce = (groundY - driveCar.position.y - driveSuspensionY) * 26;
+        driveSuspensionVelocity += suspensionForce * dt;
+        driveSuspensionVelocity *= Math.max(0, 1 - dt * 7.5);
+        driveSuspensionY += driveSuspensionVelocity * dt;
+        driveCar.position.y = groundY + driveSuspensionY;
+
         driveWheels.forEach(w => {
           w.tire.rotation.x += driveCarSpeed * dt / 0.36;
-          w.pivot.rotation.y = w.front ? driveInput.steer * 0.34 : 0;
+          w.pivot.rotation.y = w.front ? driveInput.steer * 0.32 : 0;
         });
         player.position.copy(driveCar.position);
-        playerVelX = Math.sin(driveCar.rotation.y) * driveCarSpeed;
-        playerVelZ = Math.cos(driveCar.rotation.y) * driveCarSpeed;
+        playerVelX = moveX; playerVelZ = moveZ;
         camYaw = driveCar.rotation.y + Math.PI + driveCamYawOffset;
-        driveCar.rotation.z += (-driveInput.steer * speedFactor * 0.055 - driveCar.rotation.z) * Math.min(1, dt * 5);
-        state.vehicleSpeedKmh = Math.round(Math.abs(driveCarSpeed) * 3.6);
+        driveBodyPitch += ((throttle * 0.025 - driveInput.brake * 0.045) - driveBodyPitch) * Math.min(1, dt * 4);
+        driveCar.rotation.x += (driveBodyPitch - driveCar.rotation.x) * Math.min(1, dt * 5);
+        driveCar.rotation.z += (-driveInput.steer * speedFactor * (0.035 + slip * 0.05) - driveCar.rotation.z) * Math.min(1, dt * 4.5);
+        state.vehicleSpeedKmh = Math.round(absSpeed * 3.6);
         updateEngineAudio(driveCarSpeed, Math.abs(throttle));
       } else {
         state.vehicleSpeedKmh = 0;
+        state.vehicleGear = 'P';
       }
 
       // Player Movement & Sprint
