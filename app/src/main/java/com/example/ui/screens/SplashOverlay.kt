@@ -86,6 +86,7 @@ fun SplashOverlay(
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var selectedSettingsTab by remember { mutableIntStateOf(0) }
+    var showCredits by remember { mutableStateOf(false) }
 
     BackHandler(enabled = showSettings) { showSettings = false }
 
@@ -107,88 +108,64 @@ fun SplashOverlay(
             )
         )
 
-        Column(
+        Row(
             modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 22.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 28.dp, vertical = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(28.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(Modifier.weight(0.78f), verticalArrangement = Arrangement.Center) {
                 Text("OPEN WORLD • SINGLE PLAYER", color = MenuGold, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-                Text("WILD", color = MenuText, fontSize = 43.sp, lineHeight = 44.sp, fontWeight = FontWeight.Black, letterSpacing = 3.sp)
-                Text("HORIZON", color = MenuGold, fontSize = 31.sp, lineHeight = 34.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 4.sp)
-                Text("THE CITY IS YOURS", color = MenuText.copy(alpha = 0.88f), fontSize = 10.sp, letterSpacing = 3.sp)
+                Text("WILD", color = MenuText, fontSize = 54.sp, lineHeight = 56.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
+                Text("HORIZON", color = MenuGold, fontSize = 37.sp, lineHeight = 40.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 4.sp)
+                Spacer(Modifier.height(9.dp))
+                Text("AN OPEN WORLD EXPERIENCE", color = MenuText.copy(alpha = 0.9f), fontSize = 10.sp, letterSpacing = 2.2.sp)
+                Spacer(Modifier.height(18.dp))
+                Text("BUILD 01  •  NOVA CITY", color = MenuMuted, fontSize = 9.sp, letterSpacing = 1.5.sp)
             }
-
-            if (showSettings) {
-                SettingsPanel(
-                    selectedTab = selectedSettingsTab,
-                    onTabChange = { selectedSettingsTab = it },
-                    settings = settings,
-                    onSensitivityChange = onSensitivityChange,
-                    onAudioToggle = onAudioToggle,
-                    onHighResToggle = onHighResToggle,
-                    onBack = { showSettings = false }
-                )
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1.22f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (showSettings) {
+                    SettingsPanel(
+                        selectedTab = selectedSettingsTab, onTabChange = { selectedSettingsTab = it },
+                        settings = settings, onSensitivityChange = onSensitivityChange,
+                        onAudioToggle = onAudioToggle, onHighResToggle = onHighResToggle,
+                        onBack = { showSettings = false }
+                    )
+                } else {
                     Text("MAIN MENU", color = MenuGold, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-                    MenuAction(
-                        title = "START GAME",
-                        subtitle = "Enter the open world",
-                        icon = Icons.Filled.PlayArrow,
-                        highlighted = true,
-                        onClick = onLaunchClick,
-                        enabled = engineStatus == EngineStatus.READY,
-                        tag = "launch_city_button"
-                    )
-                    MenuAction(
-                        title = "SETTINGS",
-                        subtitle = "Display, audio and controls",
-                        icon = Icons.Filled.Settings,
-                        onClick = { showSettings = true },
-                        tag = "open_settings_button"
-                    )
-                    MenuAction(
-                        title = "CONTROLS",
-                        subtitle = "Movement and camera guide",
-                        icon = Icons.Filled.Gamepad,
-                        onClick = { selectedSettingsTab = 2; showSettings = true },
-                        tag = "open_controls_button"
-                    )
-
-                    when (engineStatus) {
-                        EngineStatus.LOADING -> Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            CircularProgressIndicator(color = MenuGold, strokeWidth = 2.dp, modifier = Modifier.size(17.dp))
-                            Spacer(Modifier.width(10.dp))
-                            Text("LOADING CITY ENGINE…", color = MenuMuted, fontSize = 11.sp)
-                        }
-                        EngineStatus.ERROR -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(engineErrorMessage ?: "The city could not be loaded.", color = Color(0xFFFF8B7D), fontSize = 12.sp)
-                            OutlinedButton(onClick = onRetryClick, modifier = Modifier.fillMaxWidth().testTag("retry_engine_button")) {
-                                Icon(Icons.Filled.Refresh, null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("RETRY")
+                    MenuAction("NEW GAME", "Start a new city session", Icons.Filled.PlayArrow, true, engineStatus == EngineStatus.READY, "launch_city_button", onLaunchClick)
+                    MenuAction("CONTINUE", "Continue into Nova City", Icons.Filled.PlayArrow, enabled = engineStatus == EngineStatus.READY, tag = "continue_city_button", onClick = onLaunchClick)
+                    MenuAction("LOAD GAME", "Open the current game session", Icons.Filled.Refresh, enabled = engineStatus == EngineStatus.READY, tag = "load_game_button", onClick = onLaunchClick)
+                    MenuAction("SETTINGS", "Display, audio and controls", Icons.Filled.Settings, tag = "open_settings_button", onClick = { showSettings = true })
+                    MenuAction("GAME CONTROLS", "Movement and camera guide", Icons.Filled.Gamepad, tag = "open_controls_button", onClick = { selectedSettingsTab = 2; showSettings = true })
+                    MenuAction("CREDITS", "WILD HORIZON development", Icons.Filled.Info, tag = "credits_button", onClick = { showCredits = !showCredits })
+                    if (showCredits) {
+                        Surface(color = MenuPanel, shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, MenuLine)) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                Text("WILD HORIZON", color = MenuGold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                Text("An independent open-world game project.", color = MenuText, fontSize = 10.sp)
+                                Text("Built with Android, Kotlin, Jetpack Compose and Three.js.", color = MenuMuted, fontSize = 9.sp)
                             }
                         }
-                        EngineStatus.READY -> Text("CITY ENGINE READY  •  TOUCH TO BEGIN", color = Color(0xFFB6D7C4), fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
+                    }
+                    when (engineStatus) {
+                        EngineStatus.LOADING -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth().padding(5.dp)) {
+                            CircularProgressIndicator(color = MenuGold, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(9.dp))
+                            Text("LOADING CITY ENGINE…", color = MenuMuted, fontSize = 10.sp)
+                        }
+                        EngineStatus.ERROR -> Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Text(engineErrorMessage ?: "The city could not be loaded.", color = Color(0xFFFF8B7D), fontSize = 11.sp)
+                            OutlinedButton(onClick = onRetryClick, modifier = Modifier.fillMaxWidth().testTag("retry_engine_button")) {
+                                Icon(Icons.Filled.Refresh, null); Spacer(Modifier.width(8.dp)); Text("RETRY")
+                            }
+                        }
+                        EngineStatus.READY -> Text("CITY ENGINE READY  •  TOUCH TO BEGIN", color = Color(0xFFB6D7C4), fontSize = 9.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
                     }
                 }
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("WILD HORIZON  •  BUILD 01", color = MenuMuted, fontSize = 9.sp, letterSpacing = 1.sp)
-                Text("PORTRAIT EDITION", color = MenuGold, fontSize = 9.sp, letterSpacing = 1.sp)
-            }
         }
+
     }
 }
 
