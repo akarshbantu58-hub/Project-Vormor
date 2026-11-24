@@ -19,6 +19,7 @@
   'use strict';
 
   const CDN_SOURCES = [
+    'vendor/three.min.js',
     'https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.min.js',
     'https://unpkg.com/three@0.146.0/build/three.min.js',
     'https://cdnjs.cloudflare.com/ajax/libs/three.js/r146/three.min.js'
@@ -55,11 +56,19 @@
 
   function loadGltfLoaderThenBoot() {
     if (!window.THREE || THREE.GLTFLoader) { bootEngine(); return; }
-    const loaderScript = document.createElement('script');
-    loaderScript.src = 'https://cdn.jsdelivr.net/npm/three@0.146.0/examples/js/loaders/GLTFLoader.js';
-    loaderScript.onload = () => bootEngine();
-    loaderScript.onerror = () => bootEngine(); // Keep the procedural fallback if the loader CDN is unavailable.
-    document.head.appendChild(loaderScript);
+    const loaderSources = [
+      'vendor/GLTFLoader.js',
+      'https://cdn.jsdelivr.net/npm/three@0.146.0/examples/js/loaders/GLTFLoader.js'
+    ];
+    function tryLoaderSource(index) {
+      if (index >= loaderSources.length) { bootEngine(); return; }
+      const loaderScript = document.createElement('script');
+      loaderScript.src = loaderSources[index];
+      loaderScript.onload = () => window.THREE && THREE.GLTFLoader ? bootEngine() : tryLoaderSource(index + 1);
+      loaderScript.onerror = () => tryLoaderSource(index + 1);
+      document.head.appendChild(loaderScript);
+    }
+    tryLoaderSource(0);
   }
 
   function bootEngine() {
@@ -657,7 +666,7 @@
         else if (biome.name === 'Rural') h = 1 + broad * 2.5;
         return h * (1 - roadInfluence);
       }
-      const groundGeometry = new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, 16, 16);
+      const groundGeometry = new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, 24, 24);
       const groundPositions = groundGeometry.attributes.position;
       for (let vi = 0; vi < groundPositions.count; vi++) {
         const wx = cx + groundPositions.getX(vi);
@@ -677,10 +686,8 @@
 
       // Phase 3 water features: a continuous river ribbon, selected lakes,
       // and an ocean-facing coastal strip along the eastern map boundary.
-      const waterMat = new THREE.MeshStandardMaterial({
-        color: 0x287f9d, roughness: 0.22, metalness: 0.08,
-        transparent: true, opacity: 0.88
-      });
+      // Reuse the animated Fresnel/Gerstner water shader for every streamed water feature.
+      const waterMat = oceanMat;
       const riverPositions = [];
       const riverIndices = [];
       let riverVertex = 0;
@@ -954,10 +961,28 @@
         updateStreamedWorld();
       }
     }
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), mats.sidewalk);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500, 24, 24), mats.sidewalk);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     scene.add(ground);
+
+    // Reachable city-park pond: shared animated water shader, raised shoreline and shallow shelf.
+    const pondWater = new THREE.Mesh(new THREE.CircleGeometry(25, 64), oceanMat);
+    pondWater.name = 'NovaPark_AnimatedPond';
+    pondWater.rotation.x = -Math.PI / 2;
+    pondWater.position.set(-86, 0.12, -104);
+    pondWater.scale.set(1.18, 0.82, 1);
+    scene.add(pondWater);
+    const pondShore = new THREE.Mesh(
+      new THREE.TorusGeometry(29, 1.35, 8, 72),
+      new THREE.MeshStandardMaterial({ color: 0x9c9b82, roughness: 0.94 })
+    );
+    pondShore.name = 'NovaPark_PondShore';
+    pondShore.rotation.x = -Math.PI / 2;
+    pondShore.position.set(-86, 0.08, -104);
+    pondShore.scale.set(1.18, 0.82, 1);
+    pondShore.receiveShadow = true;
+    scene.add(pondShore);
 
     const roadCenters = [-60, 0, 60];
     roadCenters.forEach(z => {
@@ -1822,6 +1847,13 @@
       return 0.16;
     }
 
+    const POND_WATER = { x: -86, z: -104, rx: 29.5, rz: 21.5, surface: 0.12 };
+    function isInWater(x, z) {
+      const dx = (x - POND_WATER.x) / POND_WATER.rx;
+      const dz = (z - POND_WATER.z) / POND_WATER.rz;
+      return dx * dx + dz * dz < 1;
+    }
+
     function resolveCollisions(pos, radius) {
       const pMinY = pos.y;
       const pMaxY = pos.y + 1.75;
@@ -2095,7 +2127,9 @@
         if (hit) { driveCarSpeed *= -0.12; playTone(72, 0.12, 'triangle', 0.045); }
 
         // Spring-damper suspension follows terrain without snapping the chassis.
-        const groundY = getGroundElevation(driveCar.position.x, driveCar.position.y, driveCar.position.z) + 0.02;
+        const carInWater = isInWater(driveCar.position.x, driveCar.position.z);
+        if (carInWater) driveCarSpeed *= Math.max(0, 1 - dt * 2.2);
+        const groundY = getGroundElevation(driveCar.position.x, driveCar.position.y, driveCar.position.z) + (carInWater ? -0.16 : 0.02);
         const suspensionForce = (groundY - driveCar.position.y - driveSuspensionY) * 26;
         driveSuspensionVelocity += suspensionForce * dt;
         driveSuspensionVelocity *= Math.max(0, 1 - dt * 7.5);
@@ -2127,7 +2161,8 @@
       if (!state.isDriving && joyMag > 0.08) {
         if (state.isSeated) standUp();
         isSprinting = joyMag > 0.78 && state.stamina > 4;
-        const speed = isSprinting ? 8.6 : 4.6 * Math.min(1, joyMag / 0.75);
+        const swimming = isInWater(player.position.x, player.position.z);
+        const speed = swimming ? 2.15 * Math.min(1, joyMag / 0.75) : (isSprinting ? 8.6 : 4.6 * Math.min(1, joyMag / 0.75));
         if (isSprinting) {
           state.stamina = Math.max(0, state.stamina - dt * 16);
         } else {
@@ -2190,8 +2225,17 @@
 
       // Gravity & Ground Elevation
       if (!state.isSeated && !state.isDriving) {
-        const floorY = getGroundElevation(player.position.x, player.position.y, player.position.z);
-        velY -= 16.5 * dt;
+        const swimming = isInWater(player.position.x, player.position.z);
+        const floorY = swimming ? Math.max(getGroundElevation(player.position.x, player.position.y, player.position.z), POND_WATER.surface - 0.52) : getGroundElevation(player.position.x, player.position.y, player.position.z);
+        if (swimming) {
+          // Buoyancy and water drag keep the character near the surface without a hard snap.
+          velY += (floorY + 0.12 - player.position.y) * 8.5 * dt;
+          velY *= Math.max(0, 1 - dt * 2.8);
+          playerVelX *= Math.max(0, 1 - dt * 1.7);
+          playerVelZ *= Math.max(0, 1 - dt * 1.7);
+        } else {
+          velY -= 16.5 * dt;
+        }
         player.position.y += velY * dt;
         if (player.position.y <= floorY) {
           player.position.y = floorY;
