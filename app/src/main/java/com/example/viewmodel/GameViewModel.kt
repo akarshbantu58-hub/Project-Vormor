@@ -89,6 +89,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     zoneLabel = json.optString("zone", current.zoneLabel),
                     interactPrompt = promptRaw.ifBlank { null },
                     isSeated = json.optBoolean("isSeated", current.isSeated),
+                    isDriving = json.optBoolean("isDriving", current.isDriving),
+                    vehicleSpeedKmh = json.optInt("vehicleSpeedKmh", current.vehicleSpeedKmh).coerceIn(0, 250),
                     isSprinting = json.optBoolean("isSprinting", current.isSprinting),
                     timePreset = TimeOfDayPreset.fromIndex(json.optInt("timePreset", current.timePreset.index)),
                     isRaining = json.optBoolean("isRaining", current.isRaining),
