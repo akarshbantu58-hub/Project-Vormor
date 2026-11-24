@@ -1996,11 +1996,47 @@
       if (playerAnimationMixer) playerAnimationMixer.update(dt);
       waterUniforms.uTime.value = elapsed;
 
+      if (state.isDriving) {
+        const throttle = driveInput.throttle;
+        if (driveInput.brake > 0.05) {
+          driveCarSpeed *= Math.max(0, 1 - dt * (7 + driveInput.brake * 11));
+        } else if (Math.abs(throttle) > 0.02) {
+          const sameDirection = driveCarSpeed === 0 || Math.sign(driveCarSpeed) === Math.sign(throttle);
+          const accel = throttle > 0 ? (sameDirection ? 9.2 : 13.5) : (sameDirection ? 7.0 : 12.0);
+          driveCarSpeed += throttle * accel * dt;
+        } else {
+          driveCarSpeed *= Math.max(0, 1 - dt * 0.72);
+        }
+        driveCarSpeed = Math.max(-10, Math.min(34, driveCarSpeed));
+        const speedFactor = Math.min(1, Math.abs(driveCarSpeed) / 8);
+        const steerRate = (0.18 + speedFactor * 0.78) * (driveCarSpeed < -0.2 ? -1 : 1);
+        driveCar.rotation.y += driveInput.steer * steerRate * dt;
+        const oldX = driveCar.position.x, oldZ = driveCar.position.z;
+        driveCar.position.x += Math.sin(driveCar.rotation.y) * driveCarSpeed * dt;
+        driveCar.position.z += Math.cos(driveCar.rotation.y) * driveCarSpeed * dt;
+        resolveCollisions(driveCar.position, 1.12);
+        if (Math.abs(driveCar.position.x-oldX) + Math.abs(driveCar.position.z-oldZ) > Math.abs(driveCarSpeed*dt)*0.6) driveCarSpeed *= -0.18;
+        const groundY = getGroundElevation(driveCar.position.x, driveCar.position.y, driveCar.position.z);
+        driveCar.position.y += (groundY + 0.02 - driveCar.position.y) * Math.min(1, dt * 8);
+        driveWheels.forEach(w => {
+          w.tire.rotation.x += driveCarSpeed * dt / 0.36;
+          w.pivot.rotation.y = w.front ? driveInput.steer * 0.34 : 0;
+        });
+        player.position.copy(driveCar.position);
+        playerVelX = Math.sin(driveCar.rotation.y) * driveCarSpeed;
+        playerVelZ = Math.cos(driveCar.rotation.y) * driveCarSpeed;
+        camYaw = driveCar.rotation.y + Math.PI;
+        state.vehicleSpeedKmh = Math.round(Math.abs(driveCarSpeed) * 3.6);
+        updateEngineAudio(driveCarSpeed, Math.abs(throttle));
+      } else {
+        state.vehicleSpeedKmh = 0;
+      }
+
       // Player Movement & Sprint
       const joyMag = Math.hypot(joy.x, joy.y);
       let isSprinting = false;
 
-      if (joyMag > 0.08) {
+      if (!state.isDriving && joyMag > 0.08) {
         if (state.isSeated) standUp();
         isSprinting = joyMag > 0.78 && state.stamina > 4;
         const speed = isSprinting ? 8.6 : 4.6 * Math.min(1, joyMag / 0.75);
@@ -2042,7 +2078,7 @@
         playerData.legR.rotation.x = -Math.sin(walkPhase) * amp;
         playerData.armL.rotation.x = -Math.sin(walkPhase) * amp * 0.75;
         playerData.armR.rotation.x = Math.sin(walkPhase) * amp * 0.75;
-      } else {
+      } else if (!state.isDriving) {
         // Ground friction gradually settles the character when the stick is released.
         const frictionBlend = Math.min(1, 13.5 * dt);
         playerVelX += (0 - playerVelX) * frictionBlend;
@@ -2065,7 +2101,7 @@
       }
 
       // Gravity & Ground Elevation
-      if (!state.isSeated) {
+      if (!state.isSeated && !state.isDriving) {
         const floorY = getGroundElevation(player.position.x, player.position.y, player.position.z);
         velY -= 16.5 * dt;
         player.position.y += velY * dt;
@@ -2084,7 +2120,7 @@
       }
 
       updateWorldStreaming(dt);
-      updateCharacterAnimation(dt, Math.hypot(playerVelX, playerVelZ), isSprinting);
+      if (!state.isDriving) updateCharacterAnimation(dt, Math.hypot(playerVelX, playerVelZ), isSprinting);
 
       // World Animations, Traffic & NPCs
       for (let i = 0; i < animatables.length; i++) animatables[i].update(dt, elapsed);
@@ -2104,8 +2140,8 @@
       }
 
       // 3rd-Person Orbit Camera with Wall Occlusion Raycast
-      const targetPos = new THREE.Vector3(player.position.x, player.position.y + 1.42, player.position.z);
-      const desiredDist = camDistances[state.camDistMode] || 4.6;
+      const targetPos = new THREE.Vector3(player.position.x, player.position.y + (state.isDriving ? 1.48 : 1.42), player.position.z);
+      const desiredDist = state.isDriving ? [6.4, 8.0, 10.5][state.camDistMode] : (camDistances[state.camDistMode] || 4.6);
       const offsetDir = new THREE.Vector3(
         Math.sin(camYaw) * Math.cos(camPitch),
         Math.sin(camPitch),
@@ -2144,6 +2180,8 @@
           zone: state.zoneLabel,
           prompt: nearest ? nearest.getPrompt() : '',
           isSeated: state.isSeated,
+          isDriving: state.isDriving,
+          vehicleSpeedKmh: state.vehicleSpeedKmh,
           isSprinting: isSprinting,
           timePreset: state.timePreset,
           isRaining: state.isRaining,
