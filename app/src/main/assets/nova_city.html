@@ -499,6 +499,160 @@
     // =========================================================================
     // 5. WORLD ROADS, HARBOUR, BEACH, PALM TREES & YACHTS
     // =========================================================================
+    // =========================================================================
+    // 5A. WILD HORIZON 8KM WORLD EXPANSION — STREAMED 500M MAP CHUNKS
+    // The original Nova City core and its enterable interiors remain untouched.
+    // World bounds: -4000..+4000 on X/Z (8km x 8km).
+    // =========================================================================
+    const WORLD_CHUNK_SIZE = 500;
+    const WORLD_HALF_CHUNKS = 8;
+    const WORLD_STREAM_RADIUS = 1450;
+    const streamedWorldChunks = new Map();
+    const worldChunkRoot = new THREE.Group();
+    worldChunkRoot.name = 'WILD_HORIZON_STREAMED_WORLD';
+    scene.add(worldChunkRoot);
+
+    const worldBiomes = [
+      { name: 'Coastal', ground: 0x8b9b77, road: 0x343a40, tree: 0x315c42 },
+      { name: 'Forest', ground: 0x466b45, road: 0x343a40, tree: 0x254a32 },
+      { name: 'Highlands', ground: 0x777d70, road: 0x3b4147, tree: 0x53634d },
+      { name: 'Rural', ground: 0x9b9168, road: 0x3b4147, tree: 0x5a7540 },
+      { name: 'Industrial', ground: 0x77766f, road: 0x30353b, tree: 0x56614e },
+      { name: 'Metro', ground: 0x777d82, road: 0x30353b, tree: 0x3f684d }
+    ];
+
+    function worldBiomeFor(ix, iz) {
+      if (iz >= 4) return worldBiomes[0];
+      if (ix <= -4 && iz < 1) return worldBiomes[1];
+      if (ix >= 3 && iz <= -3) return worldBiomes[2];
+      if (ix <= -2 && iz >= 2) return worldBiomes[3];
+      if (ix >= 3 && iz >= 1) return worldBiomes[4];
+      return worldBiomes[5];
+    }
+
+    function makeWorldChunk(ix, iz) {
+      const key = ix + ':' + iz;
+      if (streamedWorldChunks.has(key)) return;
+      // Preserve the four original Nova City core tiles and all their interiors.
+      if (ix >= -1 && ix <= 0 && iz >= -1 && iz <= 0) return;
+      const cx = (ix + 0.5) * WORLD_CHUNK_SIZE;
+      const cz = (iz + 0.5) * WORLD_CHUNK_SIZE;
+      const biome = worldBiomeFor(ix, iz);
+      const group = new THREE.Group();
+      group.name = 'WorldChunk_' + key;
+      group.position.set(cx, 0, cz);
+
+      const groundMat = new THREE.MeshStandardMaterial({ color: biome.ground, roughness: 0.98 });
+      const groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE), groundMat);
+      groundMesh.rotation.x = -Math.PI / 2;
+      groundMesh.position.y = -0.035;
+      groundMesh.receiveShadow = true;
+      group.add(groundMesh);
+
+      const roadMat = new THREE.MeshStandardMaterial({ color: biome.road, roughness: 0.92 });
+      const shoulderMat = new THREE.MeshStandardMaterial({ color: 0xb6ad91, roughness: 1 });
+      // A connected arterial grid links every streamed chunk to its neighbours.
+      for (const offset of [-180, 0, 180]) {
+        const horizontal = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, offset === 0 ? 13 : 9), roadMat);
+        horizontal.rotation.x = -Math.PI / 2;
+        horizontal.position.set(0, 0.018, offset);
+        group.add(horizontal);
+        const vertical = new THREE.Mesh(new THREE.PlaneGeometry(offset === 0 ? 13 : 9, WORLD_CHUNK_SIZE), roadMat);
+        vertical.rotation.x = -Math.PI / 2;
+        vertical.position.set(offset, 0.019, 0);
+        group.add(vertical);
+      }
+      for (const offset of [-187, -173, -7, 7, 173, 187]) {
+        const h = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, 0.65), shoulderMat);
+        h.rotation.x = -Math.PI / 2; h.position.set(0, 0.025, offset); group.add(h);
+        const v = new THREE.Mesh(new THREE.PlaneGeometry(0.65, WORLD_CHUNK_SIZE), shoulderMat);
+        v.rotation.x = -Math.PI / 2; v.position.set(offset, 0.026, 0); group.add(v);
+      }
+
+      // Low-cost landmark terrain silhouettes; detailed terrain is added by biome passes.
+      if (biome.name === 'Highlands' || biome.name === 'Forest') {
+        const hillMat = new THREE.MeshStandardMaterial({ color: biome.name === 'Highlands' ? 0x626c61 : 0x31553a, roughness: 1 });
+        const seed = Math.abs((ix * 73856093) ^ (iz * 19349663));
+        for (let n = 0; n < 5; n++) {
+          const hx = ((seed + n * 97) % 360) - 180;
+          const hz = ((seed + n * 173) % 360) - 180;
+          const radius = biome.name === 'Highlands' ? 58 + (n % 3) * 24 : 28 + (n % 3) * 12;
+          const height = biome.name === 'Highlands' ? 55 + (n % 3) * 24 : 14 + (n % 3) * 8;
+          const hill = new THREE.Mesh(new THREE.ConeGeometry(radius, height, 7), hillMat);
+          hill.position.set(hx, height * 0.48 - 0.1, hz);
+          hill.rotation.y = (n * 0.73);
+          hill.receiveShadow = true;
+          group.add(hill);
+        }
+      }
+
+      // Instanced tree silhouettes keep rural and forest chunks inexpensive.
+      if (biome.name === 'Forest' || biome.name === 'Rural' || biome.name === 'Coastal') {
+        const count = biome.name === 'Forest' ? 34 : 14;
+        const trunkGeo = new THREE.CylinderGeometry(0.65, 1.0, 8, 5);
+        const crownGeo = new THREE.ConeGeometry(5.2, 13, 6);
+        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x59432e, roughness: 1 });
+        const crownMat = new THREE.MeshStandardMaterial({ color: biome.tree, roughness: 1 });
+        const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
+        const crowns = new THREE.InstancedMesh(crownGeo, crownMat, count);
+        const dummy = new THREE.Object3D();
+        const seed = Math.abs((ix * 83492791) ^ (iz * 297121507));
+        let placed = 0;
+        for (let n = 0; n < count * 3 && placed < count; n++) {
+          const x = ((seed + n * 67) % 470) - 235;
+          const z = ((seed + n * 131) % 470) - 235;
+          // Keep trees away from the chunk's arterial roads.
+          if (Math.abs(x % 180) < 13 || Math.abs(z % 180) < 13) continue;
+          dummy.position.set(x, 4, z); dummy.scale.setScalar(0.7 + (n % 5) * 0.12); dummy.updateMatrix();
+          trunks.setMatrixAt(placed, dummy.matrix);
+          dummy.position.set(x, 13, z); dummy.scale.setScalar(0.7 + (n % 5) * 0.12); dummy.updateMatrix();
+          crowns.setMatrixAt(placed, dummy.matrix);
+          placed++;
+        }
+        trunks.count = placed; crowns.count = placed;
+        group.add(trunks, crowns);
+      }
+
+      worldChunkRoot.add(group);
+      streamedWorldChunks.set(key, { group, lastUsed: performance.now() });
+    }
+
+    function updateStreamedWorld() {
+      const px = player.position.x, pz = player.position.z;
+      const ix = Math.floor(px / WORLD_CHUNK_SIZE);
+      const iz = Math.floor(pz / WORLD_CHUNK_SIZE);
+      const range = Math.ceil(WORLD_STREAM_RADIUS / WORLD_CHUNK_SIZE);
+      for (let z = iz - range; z <= iz + range; z++) {
+        for (let x = ix - range; x <= ix + range; x++) {
+          if (x < -WORLD_HALF_CHUNKS || x >= WORLD_HALF_CHUNKS || z < -WORLD_HALF_CHUNKS || z >= WORLD_HALF_CHUNKS) continue;
+          const cx = (x + 0.5) * WORLD_CHUNK_SIZE, cz = (z + 0.5) * WORLD_CHUNK_SIZE;
+          if (Math.hypot(cx - px, cz - pz) <= WORLD_STREAM_RADIUS + 360) makeWorldChunk(x, z);
+        }
+      }
+      // Keep only nearby chunks resident; the central prototype stays permanently intact.
+      for (const [key, entry] of streamedWorldChunks) {
+        const parts = key.split(':').map(Number);
+        const cx = (parts[0] + 0.5) * WORLD_CHUNK_SIZE, cz = (parts[1] + 0.5) * WORLD_CHUNK_SIZE;
+        if (Math.hypot(cx - px, cz - pz) > WORLD_STREAM_RADIUS + 900) {
+          worldChunkRoot.remove(entry.group);
+          entry.group.traverse(obj => {
+            if (obj.geometry && obj.geometry.dispose) obj.geometry.dispose();
+          });
+          streamedWorldChunks.delete(key);
+        }
+      }
+    }
+
+    let worldStreamClock = 0;
+    function updateWorldStreaming(dt) {
+      worldStreamClock += dt;
+      if (worldStreamClock >= 0.75) {
+        worldStreamClock = 0;
+        updateStreamedWorld();
+      }
+    }
+    updateStreamedWorld();
+
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), mats.sidewalk);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -1538,6 +1692,8 @@
         }
         resolveCollisions(player.position, 0.42);
       }
+
+      updateWorldStreaming(dt);
 
       // World Animations, Traffic & NPCs
       for (let i = 0; i < animatables.length; i++) animatables[i].update(dt, elapsed);
