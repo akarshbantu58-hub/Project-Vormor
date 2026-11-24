@@ -502,10 +502,15 @@
     // =========================================================================
     // 5A. WILD HORIZON 8KM WORLD EXPANSION — STREAMED 500M MAP CHUNKS
     // The original Nova City core and its enterable interiors remain untouched.
-    // World bounds: -4000..+4000 on X/Z (8km x 8km).
+    // Exact world footprint: 18km east-west x 15km north-south = 270km².
+    // Chunk grid: 36 x 30 chunks, each 500m x 500m.
+    // Bounds: X -9000..+9000, Z -7500..+7500 metres.
     // =========================================================================
     const WORLD_CHUNK_SIZE = 500;
-    const WORLD_HALF_CHUNKS = 8;
+    const WORLD_MIN_CHUNK_X = -18;
+    const WORLD_MAX_CHUNK_X = 17;
+    const WORLD_MIN_CHUNK_Z = -15;
+    const WORLD_MAX_CHUNK_Z = 14;
     const WORLD_STREAM_RADIUS = 1450;
     const streamedWorldChunks = new Map();
     const worldChunkRoot = new THREE.Group();
@@ -624,7 +629,7 @@
       const range = Math.ceil(WORLD_STREAM_RADIUS / WORLD_CHUNK_SIZE);
       for (let z = iz - range; z <= iz + range; z++) {
         for (let x = ix - range; x <= ix + range; x++) {
-          if (x < -WORLD_HALF_CHUNKS || x >= WORLD_HALF_CHUNKS || z < -WORLD_HALF_CHUNKS || z >= WORLD_HALF_CHUNKS) continue;
+          if (x < WORLD_MIN_CHUNK_X || x > WORLD_MAX_CHUNK_X || z < WORLD_MIN_CHUNK_Z || z > WORLD_MAX_CHUNK_Z) continue;
           const cx = (x + 0.5) * WORLD_CHUNK_SIZE, cz = (z + 0.5) * WORLD_CHUNK_SIZE;
           if (Math.hypot(cx - px, cz - pz) <= WORLD_STREAM_RADIUS + 360) makeWorldChunk(x, z);
         }
