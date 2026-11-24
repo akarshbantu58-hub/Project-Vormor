@@ -524,12 +524,53 @@
       engineFilter.frequency.setTargetAtTime(320 + rpm * 2.1, audioCtx.currentTime, 0.12);
       engineGain.gain.setTargetAtTime(0.025 + Math.min(1, Math.abs(speed) / 32) * 0.035, audioCtx.currentTime, 0.12);
     }
+    let skidOsc = null, skidGain = null;
+    function playCarHorn() {
+      if (!state.isDriving || !state.audioEnabled) return;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        [392, 494].forEach((freq, i) => {
+          const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+          osc.type = 'square'; osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.045, audioCtx.currentTime + 0.025);
+          gain.gain.setTargetAtTime(0.0001, audioCtx.currentTime + 0.32, 0.045);
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.start(); osc.stop(audioCtx.currentTime + 0.62 + i * 0.02);
+        });
+      } catch (e) {}
+    }
+    function updateSkidAudio(amount) {
+      if (!state.audioEnabled || !audioCtx) return;
+      if (amount > 0.18 && !skidOsc) {
+        try {
+          skidOsc = audioCtx.createOscillator(); skidGain = audioCtx.createGain();
+          const filter = audioCtx.createBiquadFilter();
+          skidOsc.type = 'sawtooth'; skidOsc.frequency.value = 920;
+          filter.type = 'highpass'; filter.frequency.value = 620;
+          skidGain.gain.value = 0.0001;
+          skidOsc.connect(filter); filter.connect(skidGain); skidGain.connect(audioCtx.destination);
+          skidOsc.start();
+        } catch (e) { skidOsc = null; }
+      }
+      if (skidOsc && skidGain) {
+        const target = amount > 0.18 ? Math.min(0.018, amount * 0.022) : 0.0001;
+        skidGain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.09);
+        if (amount <= 0.05) {
+          const old = skidOsc; skidOsc = null; skidGain = null;
+          setTimeout(() => { try { old.stop(); } catch (e) {} }, 350);
+        }
+      }
+    }
+
     function stopEngineAudio() {
       if (!engineOsc || !audioCtx) return;
       const now = audioCtx.currentTime;
       engineGain.gain.setTargetAtTime(0.0001, now, 0.08);
       const oldOsc = engineOsc, oldHarmonic = engineHarmonic;
       engineOsc = engineHarmonic = engineFilter = engineGain = null;
+      updateSkidAudio(0);
       setTimeout(() => { try { oldOsc.stop(); oldHarmonic.stop(); } catch (e) {} }, 420);
     }
 
@@ -1916,6 +1957,7 @@
         driveInput.handbrake = Math.max(0, Math.min(1, Number(handbrake) || 0));
       },
       exitVehicle: () => exitDriveCar(),
+      horn: () => playCarHorn(),
       addLook: (dx, dy) => {
         const lookX = (Number(dx) || 0) * 0.0052;
         camYaw -= lookX;
@@ -2072,6 +2114,7 @@
         driveCar.rotation.z += (-driveInput.steer * speedFactor * (0.035 + slip * 0.05) - driveCar.rotation.z) * Math.min(1, dt * 4.5);
         state.vehicleSpeedKmh = Math.round(absSpeed * 3.6);
         updateEngineAudio(driveCarSpeed, Math.abs(throttle));
+        updateSkidAudio(Math.max(slip * 1.8, driveInput.handbrake * speedFactor * 0.9));
       } else {
         state.vehicleSpeedKmh = 0;
         state.vehicleGear = 'P';
