@@ -87,11 +87,15 @@ fun NovaCityScreen(
             TouchControlsOverlay(
                 interactPrompt = uiState.interactPrompt,
                 isSeated = uiState.isSeated,
+                isDriving = uiState.isDriving,
+                vehicleSpeedKmh = uiState.vehicleSpeedKmh,
                 cameraSensitivity = settings.cameraSensitivity,
                 onJoystickMove = { x, y -> engineController.setJoystick(x, y) },
                 onCameraDrag = { dx, dy -> engineController.addCameraLook(dx, dy) },
                 onJump = { engineController.jump() },
-                onInteract = { engineController.interact() }
+                onInteract = { engineController.interact() },
+                onDriveInput = { throttle, steer, brake -> engineController.setDriveInput(throttle, steer, brake) },
+                onExitVehicle = { engineController.exitVehicle() }
             )
 
             HudOverlay(
